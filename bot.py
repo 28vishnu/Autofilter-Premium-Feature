@@ -21,9 +21,8 @@ from dreamxbotz.util.keepalive import ping_server
 from dreamxbotz.Bot.clients import initialize_clients
 from PIL import Image
 
-# --- TEMPORARILY COMMENTED BACKUP INTEGRATION FOR ISOLATION TESTING ---
-# from backup_utils import init_backup_indexes
-# from backup_migrate import main as migrate_main
+# Step 1: Reintroduce the backup database indexing helper only
+from backup_utils import init_backup_indexes
 
 Image.MAX_IMAGE_PIXELS = 500_000_000
 
@@ -75,8 +74,8 @@ async def dreamxbotz_start():
     # 1. Initialize Local Primary Collections Indexes First
     await Media.ensure_indexes()
 
-    # 2. Build local backup validation indexes atomically (Commented out for now)
-    # await init_backup_indexes()
+    # 2. Step 1 Action: Verify primary backup O(1) constraints safely
+    await init_backup_indexes()
 
     if MULTIPLE_DB:
         await Media2.ensure_indexes()
@@ -110,20 +109,6 @@ async def dreamxbotz_start():
     await web.TCPSite(app, bind_address, PORT).start()
 
     dreamxbotz.loop.create_task(keep_alive())
-
-    # --- Commented start_migration block for diagnostic baseline test ---
-    # async def start_migration():
-    #     logging.info("Entered start_migration()")
-    #     try:
-    #         logging.info("Calling migrate_main()...")
-    #         await migrate_main()
-    #         logging.info("migrate_main() returned successfully.")
-    #     except Exception:
-    #         logging.exception("Background migration crashed")
-
-    # Corrected Background Scheduling Loop
-    # logging.info("Starting background backup migration task...")
-    # dreamxbotz.loop.create_task(start_migration())
 
     await idle()
 
