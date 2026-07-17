@@ -25,6 +25,9 @@ from PIL import Image
 from backup_utils import init_backup_indexes
 from backup_migrate import main as migrate_main
 
+# Diagnostic logging point immediately following the import layer
+logging.info(f"Imported migrate_main = {migrate_main}")
+
 Image.MAX_IMAGE_PIXELS = 500_000_000
 
 import logging
@@ -111,16 +114,24 @@ async def dreamxbotz_start():
 
     dreamxbotz.loop.create_task(keep_alive())
 
-    # Task Execution Wrapper
+    # Modified start_migration() with targeted execution tracking markers
     async def start_migration():
+        logging.info("Entered start_migration()")
         try:
+            logging.info("Calling migrate_main()...")
             await migrate_main()
+            logging.info("migrate_main() returned successfully.")
         except Exception:
             logging.exception("Background migration crashed")
 
-    # Debug Modification: Await synchronously to trace any initial execution deadlock or failure path directly
+    # Diagnostic execution sequence block
     logging.info("Starting backup migration synchronously for diagnostics...")
+    logging.info(f"migrate_main object: {migrate_main}")
+    logging.info("About to execute start_migration()")
+
     await start_migration()
+
+    logging.info("start_migration() finished")
 
     await idle()
 
