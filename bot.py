@@ -21,9 +21,9 @@ from dreamxbotz.util.keepalive import ping_server
 from dreamxbotz.Bot.clients import initialize_clients
 from PIL import Image
 
-# Backup Core Components Integration
-from backup_utils import init_backup_indexes
-from backup_migrate import main as migrate_main
+# --- TEMPORARILY COMMENTED BACKUP INTEGRATION FOR ISOLATION TESTING ---
+# from backup_utils import init_backup_indexes
+# from backup_migrate import main as migrate_main
 
 Image.MAX_IMAGE_PIXELS = 500_000_000
 
@@ -75,8 +75,8 @@ async def dreamxbotz_start():
     # 1. Initialize Local Primary Collections Indexes First
     await Media.ensure_indexes()
 
-    # 2. Build local backup validation indexes atomically before handling data splits
-    await init_backup_indexes()
+    # 2. Build local backup validation indexes atomically (Commented out for now)
+    # await init_backup_indexes()
 
     if MULTIPLE_DB:
         await Media2.ensure_indexes()
@@ -111,24 +111,19 @@ async def dreamxbotz_start():
 
     dreamxbotz.loop.create_task(keep_alive())
 
-    # Modified start_migration() with targeted execution tracking markers
-    async def start_migration():
-        logging.info("Entered start_migration()")
-        try:
-            logging.info("Calling migrate_main()...")
-            await migrate_main()
-            logging.info("migrate_main() returned successfully.")
-        except Exception:
-            logging.exception("Background migration crashed")
+    # --- Commented start_migration block for diagnostic baseline test ---
+    # async def start_migration():
+    #     logging.info("Entered start_migration()")
+    #     try:
+    #         logging.info("Calling migrate_main()...")
+    #         await migrate_main()
+    #         logging.info("migrate_main() returned successfully.")
+    #     except Exception:
+    #         logging.exception("Background migration crashed")
 
-    # Diagnostic execution sequence block safely ran after full logger setup
-    logging.info("Starting backup migration synchronously for diagnostics...")
-    logging.info(f"migrate_main object reference: {migrate_main}")
-    logging.info("About to execute start_migration()")
-
-    await start_migration()
-
-    logging.info("start_migration() finished")
+    # Corrected Background Scheduling Loop
+    # logging.info("Starting background backup migration task...")
+    # dreamxbotz.loop.create_task(start_migration())
 
     await idle()
 
