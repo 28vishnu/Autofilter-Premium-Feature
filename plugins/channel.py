@@ -216,7 +216,11 @@ async def media_handler(bot, message):
         return
 
     try:
-        if await db.movie_update_status(bot.me.id):
+        status = await db.movie_update_status(bot.me.id)
+        logger.info(f"Movie update status: {status}")
+
+        if status:
+            logger.info("Calling process_and_send_update")
             await process_and_send_update(bot, media.file_name, media.caption)
     except Exception:
         logger.exception("Error processing media")
