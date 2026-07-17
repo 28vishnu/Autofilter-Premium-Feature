@@ -20,12 +20,21 @@ from dreamxbotz.Bot import dreamxbotz
 from dreamxbotz.util.keepalive import ping_server
 from dreamxbotz.Bot.clients import initialize_clients
 from PIL import Image
+
+# Backup Core Components Integration
+from backup_utils import init_backup_indexes
+from backup_migrate import main as migrate_main
+
 Image.MAX_IMAGE_PIXELS = 500_000_000
 
 import logging
 import logging.config
 
-logging.config.fileConfig('logging.conf')
+# Enforce logging profiles
+try:
+    logging.config.fileConfig('logging.conf')
+except Exception:
+    pass
 logging.getLogger().setLevel(logging.INFO)
 logging.getLogger("pyrogram").setLevel(logging.ERROR)
 logging.getLogger("imdbpy").setLevel(logging.ERROR)
@@ -43,6 +52,7 @@ async def dreamxbotz_start():
     bot_info = await dreamxbotz.get_me()
     dreamxbotz.username = bot_info.username
     await initialize_clients()
+    
     for name in files:
         with open(name) as a:
             patt = Path(a.name)
@@ -54,39 +64,59 @@ async def dreamxbotz_start():
             spec.loader.exec_module(load)
             sys.modules["plugins." + plugin_name] = load
             print("DreamxBotz Imported => " + plugin_name)
+            
     if ON_HEROKU:
         asyncio.create_task(ping_server()) 
+        
     b_users, b_chats = await db.get_banned()
     temp.BANNED_USERS = b_users
     temp.BANNED_CHATS = b_chats
+    
+    # 1. Initialize Local Primary Collections Indexes First
     await Media.ensure_indexes()
+    
+    # 2. Build local backup validation indexes atomically before handling data splits
+    await init_backup_indexes()
+    
     if MULTIPLE_DB:
         await Media2.ensure_indexes()
         print("Multiple Database Mode On. Now Files Will Be Save In Second DB If First DB Is Full")
     else:
         print("Single DB Mode On ! Files Will Be Save In First Database")
+        
     me = await dreamxbotz.get_me()
     temp.ME = me.id
     temp.U_NAME = me.username
     temp.B_NAME = me.first_name
     temp.B_LINK = me.mention
     dreamxbotz.username = '@' + me.username
+    
     dreamxbotz.loop.create_task(check_expired_premium(dreamxbotz))
+    
     logging.info(f"{me.first_name} with Pyrogram v{__version__} (Layer {layer}) started on {me.username}.")
     logging.info(LOG_STR)
     logging.info(script.LOGO)
+    
     tz = pytz.timezone('Asia/Kolkata')
     today = date.today()
     now = datetime.now(tz)
-    time = now.strftime("%H:%M:%S %p")
-    await dreamxbotz.send_message(chat_id=LOG_CHANNEL, text=script.RESTART_TXT.format(temp.B_LINK, today, time))
+    time_str = now.strftime("%H:%M:%S %p")
+    
+    await dreamxbotz.send_message(chat_id=LOG_CHANNEL, text=script.RESTART_TXT.format(temp.B_LINK, today, time_str))
+    
     app = web.AppRunner(await web_server())
     await app.setup()
     bind_address = "0.0.0.0"
     await web.TCPSite(app, bind_address, PORT).start()
-    dreamxbotz.loop.create_task(keep_alive())
-    await idle()
     
+    dreamxbotz.loop.create_task(keep_alive())
+    
+    # 3. Safely schedule the deep historical replication sweeper onto the current running loop
+    logging.info("Starting background backup migration task pipeline...")
+    dreamxbotz.loop.create_task(migrate_main())
+    
+    await idle()
+
 if __name__ == '__main__':
     loop = asyncio.get_event_loop()
     while True:
