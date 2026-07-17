@@ -1,249 +1,474 @@
-import asyncio
 import logging
-import time
-from datetime import datetime, timezone
-from database.ia_filterdb import Media, Media2
-from info import MULTIPLE_DB
+from struct import pack
+import re
+import base64
+from pyrogram.file_id import FileId
+from typing import Dict, List
+from collections import defaultdict
 from pymongo.errors import DuplicateKeyError
-from backup_utils import (
-    backup_new_file, get_progress, save_progress, clear_progress,
-    init_eta_tracker, log_progress, db
-)
+from umongo import Instance, Document, fields
+from motor.motor_asyncio import AsyncIOMotorClient
+from marshmallow import ValidationError
+from info import *
+from utils import get_settings, save_group_settings
+from datetime import datetime, timedelta
+import asyncio
 
-# Configure elegant logging formats matching system defaults
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+# Safe import wrapper to prevent startup crashes if backup_utils is missing
+try:
+    from backup_utils import backup_new_file
+except ImportError:
+    backup_new_file = None
+
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+# ---------------------------------------------------------
 
-# References for atomic processing locks
-migration_lock = db["migration_lock"]
+# Global cache for DB size
+_db_stats_cache = {"timestamp": None, "primary_size": 0.0}
 
-# Structural Performance Registry Matrix
-_sync_stats = {
-    "processed": 0,
-    "success": 0,
-    "failed": 0,
-    "skipped": 0,
-    "start_timestamp": None
-}
+# Primary DB
+client = AsyncIOMotorClient(DATABASE_URI)
+db = client[DATABASE_NAME]
+instance = Instance.from_db(db)
+
+# Secondary DB
+client2 = AsyncIOMotorClient(DATABASE_URI2)
+db2 = client2[DATABASE_NAME]
+instance2 = Instance.from_db(db2)
 
 
-async def acquire_migration_lock() -> bool:
-    """Acquires an atomic database execution lock to prevent parallel worker loops."""
+@instance.register
+class Media(Document):
+    file_id = fields.StrField(attribute="_id")
+    file_ref = fields.StrField(allow_none=True)
+    file_name = fields.StrField(required=True)
+    file_size = fields.IntField(required=True)
+    file_type = fields.StrField(allow_none=True)
+    mime_type = fields.StrField(allow_none=True)
+    caption = fields.StrField(allow_none=True)
+
+    class Meta:
+        indexes = ("$file_name",)
+        collection_name = COLLECTION_NAME
+
+
+@instance2.register
+class Media2(Document):
+    file_id = fields.StrField(attribute="_id")
+    file_ref = fields.StrField(allow_none=True)
+    file_name = fields.StrField(required=True)
+    file_size = fields.IntField(required=True)
+    file_type = fields.StrField(allow_none=True)
+    mime_type = fields.StrField(allow_none=True)
+    caption = fields.StrField(allow_none=True)
+
+    class Meta:
+        indexes = ("$file_name",)
+        collection_name = COLLECTION_NAME
+
+
+async def check_db_size(db):
     try:
-        # Enforce tracking index on lock collection safely before atomic operation
-        await migration_lock.create_index("_id")
-
-        result = await migration_lock.find_one_and_update(
-            {"_id": "lock", "running": {"$ne": True}},
-            {
-                "$set": {
-                    "running": True,
-                    "acquired_at": datetime.now(timezone.utc)
-                }
-            },
-            upsert=True,
-            return_document=True
+        now = datetime.utcnow()
+        cache_stale_by_time = _db_stats_cache["timestamp"] is None or (
+            now - _db_stats_cache["timestamp"] > timedelta(minutes=10)
         )
-        return result is not None
+        refresh_if_size_threshold = _db_stats_cache["primary_size"] >= 10.0
+        if not cache_stale_by_time and not refresh_if_size_threshold:
+            return _db_stats_cache["primary_size"]
+        stats = await db.command("dbstats")
+        db_logical_size = stats["dataSize"]
+        db_index_size = stats["indexSize"]
+        db_logical_size_mb = db_logical_size / (1024 * 1024)
+        db_index_size_mb = db_index_size / (1024 * 1024)
+        db_size_mb = db_logical_size_mb + db_index_size_mb
+        _db_stats_cache["primary_size"] = db_size_mb
+        _db_stats_cache["timestamp"] = now
+        return db_size_mb
     except Exception as e:
-        logger.error(f"[MIGRATION LOCK] Error acquiring migration lock state: {e}")
-        return False
+        print(f"Error Checking Database Size: {e}")
+        return 0
 
 
-async def release_migration_lock():
-    """Gently sets the execution lock status to inactive upon completion."""
-    try:
-        await migration_lock.update_one(
-            {"_id": "lock"},
-            {"$set": {"running": False, "released_at": datetime.now(timezone.utc)}}
-        )
-    except Exception as e:
-        logger.error(f"[MIGRATION LOCK] Error releasing execution lock string: {e}")
+async def save_file(media, original_msg=None):
+    """Save file in database, with detailed logging and active structural routing."""
+    file_id, file_ref = unpack_new_file_id(media.file_id)
 
+    logger.info(f"[INDEX] File: {media.file_name}")
+    logger.info(f"[INDEX] File ID: {file_id}")
 
-async def count_total_files() -> int:
-    """Computes total storage record dimensions safely by accessing the uMongo counting framework directly."""
-    total = 0
-    try:
-        # Structural Fix: Use native uMongo class document counting
-        total += await Media.count_documents({})
-        if MULTIPLE_DB:
-            total += await Media2.count_documents({})
-    except Exception as e:
-        logger.error(f"[MIGRATION COUNT] Error calculating collection boundaries: {e}")
-    return total
+    file_name = re.sub(
+        r"[_\-\.#+$%^&*()!~`,;:\"'?/<>\[\]{}=|\\]", " ", str(media.file_name)
+    )
+    file_name = re.sub(r"\s+", " ", file_name).strip()
 
+    saveMedia = Media
+    target_db = "Primary"
 
-async def migrate_collection_partition(collection_class, partition_label: str, start_after_id: str) -> int:
-    """Streams documents sequentially using memory-safe async iteration to protect container RAM."""
-    query_filter = {}
-
-    # Enforce target boundary criteria if resuming from an active checkpoint
-    if start_after_id:
-        query_filter["_id"] = {"$gt": start_after_id}
-        logger.info(f"[{partition_label}] Resuming page timeline from token slice: {start_after_id}")
-
-    logger.info(f"[{partition_label}] Creating data cursor...")
-    cursor = collection_class.find(query_filter).sort("_id", 1)
-    logger.info(f"[{partition_label}] Cursor created successfully.")
-
-    local_loop_counter = 0
-    last_processed_id = start_after_id
-
-    logger.info(f"[{partition_label}] Beginning async data streaming loop...")
-
-    # Stream objects smoothly one by one as native document instances (OOM Protected)
-    async for file_doc in cursor:
-        local_loop_counter += 1
-        _sync_stats["processed"] += 1
-        
-        # Fixed: Read primary key from schema attribute file_id mapping
-        current_id = file_doc.file_id
-        last_processed_id = current_id
-
+    if MULTIPLE_DB:
         try:
-            # Cleanly extract values using native uMongo object properties
-            file_id = file_doc.file_id
-            file_ref = getattr(file_doc, "file_ref", None)
-            file_name = getattr(file_doc, "file_name", "Unknown File")
-            caption = getattr(file_doc, "caption", None)
-            file_type = getattr(file_doc, "file_type", "document")
+            exists = await Media.count_documents({"file_id": file_id}, limit=1)
 
-            # Dispatch transaction to backup layer utilities
-            backed_up = await backup_new_file(
-                file_id=file_id,
-                file_ref=file_ref,
-                file_name=file_name,
-                caption=caption,
-                file_type=file_type,
-                original_chat_id=None,
-                original_msg_id=None
-            )
+            logger.info(f"[CHECK] Exists in Primary DB: {exists}")
 
-            if backed_up:
-                _sync_stats["success"] += 1
-            else:
-                _sync_stats["skipped"] += 1
+            if exists:
+                logger.info(f"[SKIP] '{file_name}' already in Primary DB.")
+                return False, 0
 
-            # Flush progress snapshots systematically every 100 iterations (minimizes Mongo writes)
-            if _sync_stats["processed"] % 100 == 0:
-                await log_progress(
-                    current_db=partition_label,
-                    current_id=current_id,
-                    total_processed=_sync_stats["processed"]
-                )
-
-            # High-Volume Health Progress Check (Every 1000 items)
-            if _sync_stats["processed"] % 1000 == 0:
-                logger.info(
-                    f"[HEALTH CHECK] Progress: {_sync_stats['processed']} | "
-                    f"Success: {_sync_stats['success']} | Skipped: {_sync_stats['skipped']} | "
-                    f"Failed: {_sync_stats['failed']}"
-                )
-
-            # Throttling guard to preserve Telegram endpoint balance limits
-            if local_loop_counter % 50 == 0:
-                await asyncio.sleep(0.2)
+            primary_db_size = await check_db_size(db)
+            if primary_db_size >= 407:
+                saveMedia = Media2
+                target_db = "Secondary"
+                logger.warning("Switching to Secondary DB due to size threshold.")
 
         except Exception as e:
-            _sync_stats["failed"] += 1
-            logger.error(f"[{partition_label} ERROR] Processing failed for document ID {current_id}: {e}")
-            continue
-
-    # Boundary Fix: Always force-save trailing incomplete progress chunks at partition completion
-    if last_processed_id:
-        await save_progress(
-            last_db=partition_label,
-            last_id=str(last_processed_id),
-            processed_count=_sync_stats["processed"]
-        )
-
-    return _sync_stats["processed"]
-
-
-async def main():
-    """Main application orchestrator layer handling startup validations and processing chains."""
-    logger.info(">>> ENTERED backup_migrate.main() <<<")
-    _sync_stats["start_timestamp"] = time.time()
-    logger.info("[MIGRATION INITIATED] Verifying system locks and environmental layers...")
-
-    # Enforce single-worker running constraints atomically
-    if not await acquire_migration_lock():
-        logger.critical("[MIGRATION ABORTED] Another migration instance is currently active on the cluster.")
-        return
-
+            logger.error(
+                "Error during MULTIPLE_DB check; defaulting to primary DB.",
+                exc_info=e
+            )
     try:
-        # Calculate baseline data scope boundaries
-        total_files = await count_total_files()
-        if total_files == 0:
-            logger.warning("[MIGRATION ABORTED] Target indexing pools evaluate to 0 entries. Exiting loop.")
-            return
+        record = saveMedia(
+            file_id=file_id,
+            file_ref=file_ref,
+            file_name=file_name,
+            file_size=media.file_size,
+            file_type=media.file_type,
+            mime_type=media.mime_type,
+            caption=(media.caption.html if media.caption and INDEX_CAPTION else None),
+        )
+    except ValidationError as e:
+        logger.exception(f"[VALIDATION ERROR] '{file_name}' → {e}")
+        return False, 2
+    try:
+        await record.commit()
 
-        # Extract system recovery markers from prior snapshot states
-        progress_state = await get_progress()
-        current_stage_db = progress_state["last_db"]
-        last_id = progress_state["last_id"]
-        _sync_stats["processed"] = progress_state["processed"]
+        # Conditionally execute backup pipeline if the module layout is present
+        if backup_new_file:
+            try:
+                # Safely parse structural copy credentials if incoming context is available
+                chat_id = original_msg.chat.id if original_msg and getattr(original_msg, "chat", None) else None
+                msg_id = original_msg.id if original_msg else None
 
-        # Synchronize interval tracking clocks
-        init_eta_tracker(total_files, _sync_stats["processed"])
-        logger.info(f"[MIGRATION MATRIX] Total Files: {total_files} | Resuming from: {_sync_stats['processed']}")
+                await backup_new_file(
+                    file_id=file_id,
+                    file_ref=file_ref,
+                    file_name=file_name,
+                    caption=media.caption.html if media.caption else None,
+                    file_type=media.file_type,
+                    original_chat_id=chat_id,
+                    original_msg_id=msg_id
+                )
+            except Exception as e:
+                logger.exception(f"Backup failed for {file_name}: {e}")
 
-        # --- Phase I: Primary Cluster Sync Task ---
-        if current_stage_db == "Media":
-            logger.info("[MIGRATION POOL] Extracting records from Primary Cluster Partition [Media]...")
-            await migrate_collection_partition(
-                collection_class=Media,
-                partition_label="Media",
-                start_after_id=last_id
-            )
-            # Progress Tracking State Machine Transition Pass
-            current_stage_db = "Media2"
-            last_id = None
-
-        # --- Phase II: Secondary Cluster Sync Task ---
-        if MULTIPLE_DB and current_stage_db == "Media2":
-            logger.info("[MIGRATION POOL] Extracting records from Secondary Cluster Partition [Media2]...")
-            await migrate_collection_partition(
-                collection_class=Media2,
-                partition_label="Media2",
-                start_after_id=last_id
-            )
-
-        # Drop state sync tracking documents once full sync targets are achieved
-        await clear_progress()
-
-        # Calculate process completion duration metrics
-        runtime_duration = time.time() - _sync_stats["start_timestamp"]
-        hours, remainder = divmod(int(runtime_duration), 3600)
-        minutes, seconds = divmod(remainder, 60)
-        duration_str = f"{hours}h {minutes}m {seconds}s" if hours > 0 else f"{minutes}m {seconds}s"
-
+    except DuplicateKeyError:
         logger.info(
-            f"\n"
-            f"==================================================\n"
-            f"       HISTORICAL MIGRATION PASS COMPLETED        \n"
-            f"==================================================\n"
-            f" 🗓️ Duration : {duration_str}\n"
-            f" 📂 Total Evaluated : {_sync_stats['processed']}\n"
-            f" ✅ Saved Backups  : {_sync_stats['success']}\n"
-            f" 🔁 Skipped (Dupe) : {_sync_stats['skipped']}\n"
-            f" ❌ Fault Failures : {_sync_stats['failed']}\n"
-            f"=================================================="
+            f"[SKIP] DuplicateKey: '{file_name}' already exists in {target_db} DB."
+        )
+        return False, 0
+    except Exception as e:
+        logger.exception(
+            f"[ERROR] Failed commit of '{file_name}' to {target_db} DB.", exc_info=e
+        )
+        return False, 3
+
+    logger.info(f"[SUCCESS] '{file_name}' saved to {target_db} DB.")
+    return True, 1
+
+
+async def get_search_results(chat_id, query, file_type=None, max_results=None, offset=0, filter=False):
+    if chat_id is not None:
+        settings = await get_settings(int(chat_id))
+        if max_results is None:
+            try:
+                max_results = 10 if settings.get("max_btn") else int(MAX_B_TN)
+            except KeyError:
+                await save_group_settings(int(chat_id), "max_btn", True)
+                settings = await get_settings(int(chat_id))
+                max_results = 10 if settings.get("max_btn") else int(MAX_B_TN)
+
+    if isinstance(query, list):
+        raw_pattern = '|'.join(re.escape(q.strip()) for q in query if q.strip())
+        regex_list = [re.compile(raw_pattern, re.IGNORECASE)] if raw_pattern else []
+
+        if USE_CAPTION_FILTER:
+            filter_mongo = {"$or": ([{"file_name": r} for r in regex_list] + [{"caption": r} for r in regex_list])}
+        else:
+            filter_mongo = {"$or": [{"file_name": r} for r in regex_list]}
+    else:
+        query = query.strip()
+        if not query:
+            return [], None, 0
+
+        if ' ' in query:
+            words = [re.escape(word) for word in query.split()]
+            raw_pattern = r'.*'.join(words)
+        else:
+            raw_pattern = re.escape(query)
+
+        try:
+            regex = re.compile(raw_pattern, flags=re.IGNORECASE)
+        except re.error:
+            return [], None, 0
+
+        if USE_CAPTION_FILTER:
+            filter_mongo = {"$or": [{"file_name": regex}, {"caption": regex}]}
+        else:
+            filter_mongo = {"file_name": regex}
+
+    if file_type:
+        filter_mongo["file_type"] = file_type
+
+    if ULTRA_FAST_MODE:
+        fetch_limit = max(offset + max_results + 100, 200)
+
+        find_tasks = [
+            Media.find(filter_mongo).sort("$natural", -1).limit(fetch_limit).to_list(length=fetch_limit)
+        ]
+        if MULTIPLE_DB:
+            find_tasks.append(
+                Media2.find(filter_mongo).sort("$natural", -1).limit(fetch_limit).to_list(length=fetch_limit)
+            )
+
+        results = await asyncio.gather(*find_tasks)
+
+        all_matched_files = []
+        for result in results:
+            all_matched_files.extend(result)
+
+        seen_ids = set()
+        unique_files = []
+        for f in all_matched_files:
+            if f.file_id not in seen_ids:
+                seen_ids.add(f.file_id)
+                unique_files.append(f)
+
+        actual_total = len(unique_files)
+        sliced_files = unique_files[offset : offset + max_results]
+
+        has_next_page = actual_total > (offset + max_results)
+        next_offset = offset + len(sliced_files) if has_next_page else ""
+
+        return sliced_files, next_offset, actual_total
+
+    else:
+        count_tasks = [Media.count_documents(filter_mongo)]
+        find_tasks = [Media.find(filter_mongo).sort("$natural", -1).skip(offset).limit(max_results).to_list(length=max_results)]
+
+        if MULTIPLE_DB:
+            count_tasks.append(Media2.count_documents(filter_mongo))
+            find_tasks.append(Media2.find(filter_mongo).sort("$natural", -1).skip(offset).limit(max_results).to_list(length=max_results))
+
+        count_results, find_results = await asyncio.gather(
+            asyncio.gather(*count_tasks),
+            asyncio.gather(*find_tasks)
         )
 
-    except asyncio.CancelledError:
-        logger.warning("[MIGRATION WARNING] Execution loop cancelled by system signal (SIGTERM/SIGINT). Progress saved.")
-        raise
+        total_results = sum(count_results)
+
+        files = find_results[0]
+        if MULTIPLE_DB and len(find_results) > 1:
+            files.extend(find_results[1])
+
+        seen_ids = set()
+        unique_files = []
+        for f in files:
+            if f.file_id not in seen_ids:
+                seen_ids.add(f.file_id)
+                unique_files.append(f)
+
+        unique_files = unique_files[:max_results]
+
+        next_offset = offset + len(unique_files)
+        if next_offset >= total_results:
+            next_offset = ""
+
+        return unique_files, next_offset, total_results
+
+
+async def get_bad_files(query, file_type=None):
+    query = query.strip()
+    if not query:
+        raw_pattern = '.'
+    elif ' ' not in query:
+        raw_pattern = r"(\b|[.+-])" + query + r"(\b|[.+-])"
+    else:
+        raw_pattern = query.replace(" ", r".*[\s.+-_()]")
+    try:
+        regex = re.compile(raw_pattern, flags=re.IGNORECASE)
+    except:
+        return []
+    if USE_CAPTION_FILTER:
+        filter = {'$or': [{'file_name': regex}, {'caption': regex}]}
+    else:
+        filter = {'file_name': regex}
+    if file_type:
+        filter['file_type'] = file_type
+    cursor1 = Media.find(filter).sort('$natural', -1)
+    files1 = await cursor1.to_list(length=(await Media.count_documents(filter)))
+    if MULTIPLE_DB:
+        cursor2 = Media2.find(filter).sort('$natural', -1)
+        files2 = await cursor2.to_list(length=(await Media2.count_documents(filter)))
+        files = files1 + files2
+    else:
+        files = files1
+    total_results = len(files)
+    return files, total_results
+
+
+async def get_file_details(query):
+    filter = {"file_id": query}
+
+    tasks = [Media.find(filter).to_list(length=1)]
+    if MULTIPLE_DB:
+        tasks.append(Media2.find(filter).to_list(length=1))
+
+    results = await asyncio.gather(*tasks)
+
+    for filedetails in results:
+        if filedetails:
+            return filedetails
+
+    return []
+
+
+def encode_file_id(s: bytes) -> str:
+    r = b""
+    n = 0
+    for i in s + bytes([22]) + bytes([4]):
+        if i == 0:
+            n += 1
+        else:
+            if n:
+                r += b"\x00" + bytes([n])
+                n = 0
+
+            r += bytes([i])
+    return base64.urlsafe_b64encode(r).decode().rstrip("=")
+
+
+def encode_file_ref(file_ref: bytes) -> str:
+    return base64.urlsafe_b64encode(file_ref).decode().rstrip("=")
+
+
+def unpack_new_file_id(new_file_id):
+    """Return file_id, file_ref"""
+    decoded = FileId.decode(new_file_id)
+    file_id = encode_file_id(
+        pack(
+            "<iiqq",
+            int(decoded.file_type),
+            decoded.dc_id,
+            decoded.media_id,
+            decoded.access_hash,
+        )
+    )
+    file_ref = encode_file_ref(decoded.file_reference)
+    return file_id, file_ref
+
+
+async def dreamxbotz_fetch_media(limit: int) -> List[dict]:
+    try:
+        if MULTIPLE_DB:
+            db_size = await check_db_size(db)
+            if db_size > 407:
+                cursor = Media2.find().sort("$natural", -1).limit(limit)
+                files = await cursor.to_list(length=limit)
+                return files
+        cursor = Media.find().sort("$natural", -1).limit(limit)
+        files = await cursor.to_list(length=limit)
+        return files
     except Exception as e:
-        logger.exception(f"[MIGRATION PANIC] Critical error encountered inside primary execution loop: {e}")
-    finally:
-        # Ensure the processing lock is safely flipped to False regardless of completion status
-        await release_migration_lock()
+        logger.error(f"Error in dreamxbotz_fetch_media: {e}")
+        return []
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+async def dreamxbotz_clean_title(filename: str, is_series: bool = False) -> str:
+    try:
+        year_match = re.search(r"^(.?(\d{4}|))", filename, re.IGNORECASE)
+        if year_match:
+            title = year_match.group(1).replace("(", "").replace(")", "")
+            return (
+                re.sub(
+                    r"(?:@[^ \n\r\t.,:;!?()@()]+)",
+                    " ",
+                    title,
+                )
+                .strip()
+                .title()
+            )
+        if is_series:
+            season_match = re.search(
+                r"(.?)(?:S(\d{1,2})|Season\s*(\d+)|Season(\d+))(?:\s*Combined)?",
+                filename,
+                re.IGNORECASE,
+                )
+            if season_match:
+                title = season_match.group(1).strip()
+                season = (
+                    season_match.group(2)
+                    or season_match.group(3)
+                    or season_match.group(4)
+                )
+                title = (
+                    re.sub(
+                        r"(?:@[^ \n\r\t.,:;!?()@()]+)",
+                        " ",
+                        title,
+                    )
+                    .strip()
+                    .title()
+                )
+                return f"{title} S{int(season):02}"
+        title = filename
+        return (
+            re.sub(
+                r"(?:@[^ \n\r\t.,:;!?()@()]+)", " ", title
+            )
+            .strip()
+            .title()
+        )
+    except Exception as e:
+        logger.error(f"Error in truncate_title: {e}")
+        return filename
+
+
+async def dreamxbotz_get_movies(limit: int = 20) -> List[str]:
+    try:
+        cursor = await dreamxbotz_fetch_media(limit * 2)
+        results = set()
+        pattern = r"(?:s\d{1,2}|season\s*\d+|season\d+)(?:\scombined)?(?:e\d{1,2}|episode\s\d+)?\b"
+        for file in cursor:
+            file_name = getattr(file, "file_name", "")
+            if not re.search(pattern, file_name, re.IGNORECASE):
+                title = await dreamxbotz_clean_title(file_name)
+                results.add(title)
+            if len(results) >= limit:
+                break
+        return sorted(list(results))[:limit]
+    except Exception as e:
+        logger.error(f"Error in dreamxbotz_get_movies: {e}")
+        return []
+
+
+async def dreamxbotz_get_series(limit: int = 30) -> Dict[str, List[int]]:
+    try:
+        cursor = await dreamxbotz_fetch_media(limit * 5)
+        grouped = defaultdict(list)
+        pattern = r"(.?)(?:S(\d{1,2})|Season\s(\d+)|Season(\d+))(?:\sCombined)?(?:E(\d{1,2})|Episode\s(\d+))?\b"
+        for file in cursor:
+            file_name = getattr(file, "file_name", "")
+            match = re.search(pattern, file_name, re.IGNORECASE)
+            if match:
+                title = await dreamxbotz_clean_title(match.group(1), is_series=True)
+                season = int(match.group(2) or match.group(3) or match.group(4))
+                grouped[title].append(season)
+        return {
+            title: sorted(set(seasons))[:10]
+            for title, seasons in grouped.items()
+            if seasons
+        }
+    except Exception as e:
+        logger.error(f"Error in dreamxbotz_get_series: {e}")
+        return []
