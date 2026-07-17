@@ -21,8 +21,9 @@ from dreamxbotz.util.keepalive import ping_server
 from dreamxbotz.Bot.clients import initialize_clients
 from PIL import Image
 
-# Step 1 Integration: Load the database indexing validation hooks only
+# Step 2 Integration: Import core backup validation and migration hooks cleanly
 from backup_utils import init_backup_indexes
+from backup_migrate import main as migrate_main
 
 Image.MAX_IMAGE_PIXELS = 500_000_000
 
@@ -74,7 +75,7 @@ async def dreamxbotz_start():
     # Initialize Local Primary Collections Indexes First
     await Media.ensure_indexes()
 
-    # Step 1 Execution: Verify backup O(1) matching parameters safely on the cluster
+    # Verify backup O(1) matching parameters safely on the cluster
     await init_backup_indexes()
 
     if MULTIPLE_DB:
@@ -109,6 +110,9 @@ async def dreamxbotz_start():
     await web.TCPSite(app, bind_address, PORT).start()
 
     dreamxbotz.loop.create_task(keep_alive())
+
+    # Step 2 Action: Start migration non-blockingly in the background loop
+    dreamxbotz.loop.create_task(migrate_main())
 
     await idle()
 
