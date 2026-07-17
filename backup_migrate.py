@@ -86,22 +86,28 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
         query_filter["_id"] = {"$gt": start_after_id}
         logger.info(f"[{partition_label}] Resuming page timeline from token slice: {start_after_id}")
 
-    # Memory Management Fix: Use uMongo find() to stream documents via cursor without loading everything into memory
+    # Trace Tracking Point A: Monitor cursor instantiation phases precisely
+    logger.info(f"[{partition_label}] Creating data cursor...")
     cursor = collection_class.find(query_filter).sort("_id", 1)
+    logger.info(f"[{partition_label}] Cursor created successfully.")
 
     local_loop_counter = 0
     last_processed_id = start_after_id
+
+    logger.info(f"[{partition_label}] Beginning async data streaming loop...")
 
     # Stream objects smoothly one by one as native document instances
     async for file_doc in cursor:
         local_loop_counter += 1
         _sync_stats["processed"] += 1
-        current_id = file_doc.id
+        
+        # Structural Fix: Map to compiled .file_id schema property explicitly
+        current_id = file_doc.file_id
         last_processed_id = current_id
 
         try:
-            # Structural Fix: Cleanly extract values using native uMongo object properties
-            file_id = file_doc.id
+            # Cleanly extract values using native uMongo object properties
+            file_id = file_doc.file_id
             file_ref = getattr(file_doc, "file_ref", None)
             file_name = getattr(file_doc, "file_name", "Unknown File")
             caption = getattr(file_doc, "caption", None)
@@ -161,6 +167,8 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
 
 async def main():
     """Main application orchestrator layer handling startup validations and processing chains."""
+    # Trace Tracking Point B: Verify exact thread context launch loops inside the container environment
+    logger.info(">>> ENTERED backup_migrate.main() <<<")
     _sync_stats["start_timestamp"] = time.time()
     logger.info("[MIGRATION INITIATED] Verifying system locks and environmental layers...")
 
