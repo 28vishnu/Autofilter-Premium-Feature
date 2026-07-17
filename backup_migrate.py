@@ -35,7 +35,7 @@ async def acquire_migration_lock() -> bool:
     try:
         # Enforce tracking index on lock collection safely before atomic operation
         await migration_lock.create_index("_id")
-        
+
         result = await migration_lock.find_one_and_update(
             {"_id": "lock", "running": {"$ne": True}},
             {
@@ -65,46 +65,47 @@ async def release_migration_lock():
 
 
 async def count_total_files() -> int:
-    """Computes total storage record dimensions safely by accessing compiled driver collection targets directly."""
+    """Computes total storage record dimensions safely by accessing the uMongo counting framework directly."""
     total = 0
     try:
-        # Verified Driver Path: Access the direct motor Collection instance exposed via uMongo models
-        total += await Media.collection.count_documents({})
+        # Structural Fix: Use native uMongo class document counting
+        total += await Media.count_documents({})
         if MULTIPLE_DB:
-            total += await Media2.collection.count_documents({})
+            total += await Media2.count_documents({})
     except Exception as e:
         logger.error(f"[MIGRATION COUNT] Error calculating collection boundaries: {e}")
     return total
 
 
 async def migrate_collection_partition(collection_class, partition_label: str, start_after_id: str) -> int:
-    """Streams documents sequentially using memory-optimized batch cursors across distinct database clusters."""
+    """Streams documents sequentially using memory-safe async iteration to protect container RAM."""
     query_filter = {}
-    
+
     # Enforce target boundary criteria if resuming from an active checkpoint
     if start_after_id:
         query_filter["_id"] = {"$gt": start_after_id}
         logger.info(f"[{partition_label}] Resuming page timeline from token slice: {start_after_id}")
 
-    # Memory Management: Stream elements one by one via direct compiled collection async find cursors
-    cursor = collection_class.collection.find(query_filter).sort("_id", 1).batch_size(100)
-    
+    # Memory Management Fix: Use uMongo find() to stream documents via cursor without loading everything into memory
+    cursor = collection_class.find(query_filter).sort("_id", 1)
+
     local_loop_counter = 0
     last_processed_id = start_after_id
 
-    async for raw_doc in cursor:
+    # Stream objects smoothly one by one as native document instances
+    async for file_doc in cursor:
         local_loop_counter += 1
         _sync_stats["processed"] += 1
-        current_id = raw_doc["_id"]
+        current_id = file_doc.id
         last_processed_id = current_id
 
         try:
-            # Securely extract element values directly from the driver dict layout
-            file_id = raw_doc["_id"]
-            file_ref = raw_doc.get("file_ref")
-            file_name = raw_doc.get("file_name", "Unknown File")
-            caption = raw_doc.get("caption")
-            file_type = raw_doc.get("file_type", "document")
+            # Structural Fix: Cleanly extract values using native uMongo object properties
+            file_id = file_doc.id
+            file_ref = getattr(file_doc, "file_ref", None)
+            file_name = getattr(file_doc, "file_name", "Unknown File")
+            caption = getattr(file_doc, "caption", None)
+            file_type = getattr(file_doc, "file_type", "document")
 
             # Dispatch transaction to backup layer utilities
             backed_up = await backup_new_file(
@@ -208,7 +209,7 @@ async def main():
 
         # Drop state sync tracking documents once full sync targets are achieved
         await clear_progress()
-        
+
         # Calculate process completion duration metrics
         runtime_duration = time.time() - _sync_stats["start_timestamp"]
         hours, remainder = divmod(int(runtime_duration), 3600)
