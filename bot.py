@@ -21,7 +21,7 @@ from dreamxbotz.util.keepalive import ping_server
 from dreamxbotz.Bot.clients import initialize_clients
 from PIL import Image
 
-# Step 2 Integration: Import core backup validation and migration hooks cleanly
+# Core backup core validation and migration hooks integration layers
 from backup_utils import init_backup_indexes
 from backup_migrate import main as migrate_main
 
@@ -111,8 +111,17 @@ async def dreamxbotz_start():
 
     dreamxbotz.loop.create_task(keep_alive())
 
-    # Step 2 Action: Start migration non-blockingly in the background loop
-    dreamxbotz.loop.create_task(migrate_main())
+    # Isolated Task Wrapper: Explicit containment mapping for tracking exceptions
+    async def start_migration():
+        try:
+            logging.info("Starting backup migration...")
+            await migrate_main()
+            logging.info("Backup migration finished.")
+        except Exception:
+            logging.exception("Backup migration crashed.")
+
+    # Safely dispatch onto background loop execution profile right before entering idle block
+    dreamxbotz.loop.create_task(start_migration())
 
     await idle()
 
