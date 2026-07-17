@@ -26,7 +26,7 @@ client = AsyncIOMotorClient(DATABASE_URI)
 db = client[DATABASE_NAME]
 instance = Instance.from_db(db)
 
-# Secondary db
+# Secondary DB
 client2 = AsyncIOMotorClient(DATABASE_URI2)
 db2 = client2[DATABASE_NAME]
 instance2 = Instance.from_db(db2)
@@ -194,25 +194,43 @@ async def get_search_results(chat_id, query, file_type=None, max_results=None, o
         filter_mongo["file_type"] = file_type
     
     if ULTRA_FAST_MODE:
-        limit = max_results + 1
-        find_tasks = [Media.find(filter_mongo).sort("$natural", -1).skip(offset).limit(limit).to_list(length=limit)]
+        # Dynamically scale execution limit based on page depth to ensure all deep content is accessible
+        fetch_limit = max(offset + max_results + 100, 200)
+        
+        find_tasks = [
+            Media.find(filter_mongo).sort("$natural", -1).limit(fetch_limit).to_list(length=fetch_limit)
+        ]
         if MULTIPLE_DB:
-            find_tasks.append(Media2.find(filter_mongo).sort("$natural", -1).skip(offset).limit(limit).to_list(length=limit))
+            find_tasks.append(
+                Media2.find(filter_mongo).sort("$natural", -1).limit(fetch_limit).to_list(length=fetch_limit)
+            )
         
         results = await asyncio.gather(*find_tasks)
-        files = results[0]
-        if MULTIPLE_DB and len(results) > 1:
-            files.extend(results[1])
         
-        files = files[:limit]
+        # Flatten raw database collections
+        all_matched_files = []
+        for result in results:
+            all_matched_files.extend(result)
+            
+        # Precise de-duplication pass preserving collection chronologies
+        seen_ids = set()
+        unique_files = []
+        for f in all_matched_files:
+            if f.file_id not in seen_ids:
+                seen_ids.add(f.file_id)
+                unique_files.append(f)
 
-        has_next_page = len(files) > max_results
-        if has_next_page:
-            files = files[:-1]
+        # Apply unified global memory slicing for perfectly aligned pagination
+        actual_total = len(unique_files)
+        sliced_files = unique_files[offset : offset + max_results]
+        
+        has_next_page = actual_total > (offset + max_results)
+        next_offset = offset + len(sliced_files) if has_next_page else ""
+        
+        return sliced_files, next_offset, actual_total
 
-        next_offset = offset + len(files) if has_next_page else ""
-        total_results = offset + len(files) + (1 if has_next_page else 0)
     else:
+        # Standard robust count-skipping pagination engine fallback
         count_tasks = [Media.count_documents(filter_mongo)]
         find_tasks = [Media.find(filter_mongo).sort("$natural", -1).skip(offset).limit(max_results).to_list(length=max_results)]
 
@@ -226,17 +244,26 @@ async def get_search_results(chat_id, query, file_type=None, max_results=None, o
         )
         
         total_results = sum(count_results)
+        
         files = find_results[0]
         if MULTIPLE_DB and len(find_results) > 1:
             files.extend(find_results[1])
+            
+        seen_ids = set()
+        unique_files = []
+        for f in files:
+            if f.file_id not in seen_ids:
+                seen_ids.add(f.file_id)
+                unique_files.append(f)
         
-        files = files[:max_results]
+        unique_files = unique_files[:max_results]
         
-        next_offset = offset + len(files)
+        next_offset = offset + len(unique_files)
         if next_offset >= total_results:
             next_offset = ""
 
-    return files, next_offset, total_results
+        return unique_files, next_offset, total_results
+
 
 async def get_bad_files(query, file_type=None):
     query = query.strip()
@@ -322,7 +349,7 @@ def unpack_new_file_id(new_file_id):
 async def dreamxbotz_fetch_media(limit: int) -> List[dict]:
     try:
         if MULTIPLE_DB:
-            db_size = await check_db_size(Media)
+            db_size = await check_db_size(db)
             if db_size > 407:
                 cursor = Media2.find().sort("$natural", -1).limit(limit)
                 files = await cursor.to_list(length=limit)
