@@ -77,7 +77,7 @@ async def count_total_files() -> int:
 
 
 async def migrate_collection_partition(collection_class, partition_label: str, start_after_id: str) -> int:
-    """Streams documents sequentially using memory-safe async iteration to protect container RAM."""
+    """Streams documents sequentially using memory-safe batch chunks to protect container RAM and execution."""
     print(f"ENTER migrate_collection_partition({partition_label})", flush=True)
 
     query_filter = {}
@@ -88,71 +88,79 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
         logger.info(f"[{partition_label}] Resuming page timeline from token slice: {start_after_id}")
 
     logger.info(f"[{partition_label}] Creating data cursor...")
-    cursor = collection_class.find(query_filter).sort("file_id", 1)
+    cursor = collection_class.find(query_filter).sort("$natural", 1)
     logger.info(f"[{partition_label}] Cursor created successfully.")
 
     local_loop_counter = 0
     last_processed_id = start_after_id
 
-    # Step 2 & 3 Fix: Stream documents one by one using low-RAM async streaming iteration
-    logger.info(f"[{partition_label}] Beginning streaming migration...")
+    logger.info(f"[{partition_label}] Beginning chunk-batched streaming migration...")
 
-    async for file_doc in cursor:
-        local_loop_counter += 1
-        _sync_stats["processed"] += 1
+    # Infinite structural chunking pipeline (OOM Protected)
+    while True:
+        docs = await cursor.to_list(length=100)
 
-        current_id = file_doc.file_id
-        last_processed_id = current_id
+        # Drop out of execution loops gracefully if the final target batch slice returns empty
+        if not docs:
+            break
 
-        try:
-            # Cleanly extract fields using valid uMongo document object names
-            file_id = file_doc.file_id
-            file_ref = getattr(file_doc, "file_ref", None)
-            file_name = getattr(file_doc, "file_name", "Unknown File")
-            caption = getattr(file_doc, "caption", None)
-            file_type = getattr(file_doc, "file_type", "document")
+        # Process the 100 loaded items sequentially
+        for file_doc in docs:
+            local_loop_counter += 1
+            _sync_stats["processed"] += 1
 
-            # Dispatch transaction to backup layer utilities
-            backed_up = await backup_new_file(
-                file_id=file_id,
-                file_ref=file_ref,
-                file_name=file_name,
-                caption=caption,
-                file_type=file_type,
-                original_chat_id=None,
-                original_msg_id=None
-            )
+            current_id = file_doc.file_id
+            last_processed_id = current_id
 
-            # backup_new_file returns a boolean value (True if saved, False if skipped)
-            if backed_up:
-                _sync_stats["success"] += 1
-            else:
-                _sync_stats["skipped"] += 1
+            try:
+                # Cleanly extract fields using valid uMongo document object names
+                file_id = file_doc.file_id
+                file_ref = getattr(file_doc, "file_ref", None)
+                file_name = getattr(file_doc, "file_name", "Unknown File")
+                caption = getattr(file_doc, "caption", None)
+                file_type = getattr(file_doc, "file_type", "document")
 
-            # Flush progress snapshots systematically every 100 iterations
-            if _sync_stats["processed"] % 100 == 0:
-                await log_progress(
-                    current_db=partition_label,
-                    current_id=current_id,
-                    total_processed=_sync_stats["processed"]
+                # Dispatch transaction to backup layer utilities
+                backed_up = await backup_new_file(
+                    file_id=file_id,
+                    file_ref=file_ref,
+                    file_name=file_name,
+                    caption=caption,
+                    file_type=file_type,
+                    original_chat_id=None,
+                    original_msg_id=None
                 )
 
-            # High-Volume Health Progress Check (Every 1000 items)
-            if _sync_stats["processed"] % 1000 == 0:
-                logger.info(
-                    f"[HEALTH CHECK] Progress: {_sync_stats['processed']} | "
-                    f"Success: {_sync_stats['success']} | Skipped: {_sync_stats['skipped']} | "
-                    f"Failed: {_sync_stats['failed']}"
-                )
+                # backup_new_file returns a boolean value (True if saved, False if skipped)
+                if backed_up:
+                    _sync_stats["success"] += 1
+                else:
+                    _sync_stats["skipped"] += 1
 
-            # Throttling guard to preserve Telegram endpoint balance limits
-            if local_loop_counter % 50 == 0:
-                await asyncio.sleep(0.2)
+                # Flush progress snapshots systematically every 100 iterations
+                if _sync_stats["processed"] % 100 == 0:
+                    await log_progress(
+                        current_db=partition_label,
+                        current_id=current_id,
+                        total_processed=_sync_stats["processed"]
+                    )
 
-        except Exception as e:
-            _sync_stats["failed"] += 1
-            logger.error(f"[{partition_label} ERROR] Processing failed for document ID {current_id}: {e}")
-            continue
+                # High-Volume Health Progress Check (Every 1000 items)
+                if _sync_stats["processed"] % 1000 == 0:
+                    logger.info(
+                        f"[HEALTH CHECK] Progress: {_sync_stats['processed']} | "
+                        f"Success: {_sync_stats['success']} | Skipped: {_sync_stats['skipped']} | "
+                        f"Failed: {_sync_stats['failed']}"
+                    )
+
+                # Throttling guard to preserve Telegram endpoint balance limits
+                if local_loop_counter % 50 == 0:
+                    await asyncio.sleep(0.2)
+
+            except Exception as e:
+                _sync_stats["failed"] += 1
+                logger.error(f"[{partition_label} ERROR] Processing failed for document ID {current_id}: {e}")
+                continue
 
     # Boundary Fix: Always force-save trailing incomplete progress chunks at partition completion
     if last_processed_id:
