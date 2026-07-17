@@ -12,7 +12,6 @@ from marshmallow import ValidationError
 from info import *
 from utils import get_settings, save_group_settings
 from datetime import datetime, timedelta
-import logging
 import asyncio
 
 logger = logging.getLogger(__name__)
@@ -27,7 +26,7 @@ client = AsyncIOMotorClient(DATABASE_URI)
 db = client[DATABASE_NAME]
 instance = Instance.from_db(db)
 
-# secondary db
+# Secondary db
 client2 = AsyncIOMotorClient(DATABASE_URI2)
 db2 = client2[DATABASE_NAME]
 instance2 = Instance.from_db(db2)
@@ -89,26 +88,38 @@ async def check_db_size(db):
 async def save_file(media):
     """Save file in database, with detailed logging."""
     file_id, file_ref = unpack_new_file_id(media.file_id)
+
+    logger.info(f"[INDEX] File: {media.file_name}")
+    logger.info(f"[INDEX] File ID: {file_id}")
+
     file_name = re.sub(
         r"[_\-\.#+$%^&*()!~`,;:\"'?/<>\[\]{}=|\\]", " ", str(media.file_name)
     )
     file_name = re.sub(r"\s+", " ", file_name).strip()
+
     saveMedia = Media
     target_db = "Primary"
+
     if MULTIPLE_DB:
         try:
             exists = await Media.count_documents({"file_id": file_id}, limit=1)
+
+            logger.info(f"[CHECK] Exists in Primary DB: {exists}")
+
             if exists:
                 logger.info(f"[SKIP] '{file_name}' already in Primary DB.")
                 return False, 0
+
             primary_db_size = await check_db_size(db)
             if primary_db_size >= 407:
                 saveMedia = Media2
                 target_db = "Secondary"
                 logger.warning("Switching to Secondary DB due to size threshold.")
+
         except Exception as e:
             logger.error(
-                "Error during MULTIPLE_DB check; defaulting to primary DB.", exc_info=e
+                "Error during MULTIPLE_DB check; defaulting to primary DB.",
+                exc_info=e
             )
     try:
         record = saveMedia(
@@ -138,6 +149,7 @@ async def save_file(media):
     logger.info(f"[SUCCESS] '{file_name}' saved to {target_db} DB.")
     return True, 1
 
+
 async def get_search_results(chat_id, query, file_type=None, max_results=None, offset=0, filter=False):
     if chat_id is not None:
         settings = await get_settings(int(chat_id))
@@ -149,9 +161,7 @@ async def get_search_results(chat_id, query, file_type=None, max_results=None, o
                 settings = await get_settings(int(chat_id))
                 max_results = 10 if settings.get("max_btn") else int(MAX_B_TN)
 
-    # This is the new "middle-ground" regex logic for speed and flexibility
     if isinstance(query, list):
-        # This part handles season searches etc., where you need to match any of the full phrases.
         raw_pattern = '|'.join(re.escape(q.strip()) for q in query if q.strip())
         regex_list = [re.compile(raw_pattern, re.IGNORECASE)] if raw_pattern else []
         
@@ -164,13 +174,10 @@ async def get_search_results(chat_id, query, file_type=None, max_results=None, o
         if not query:
             return [], None, 0
             
-        # This is the key change for balancing speed and flexibility
         if ' ' in query:
-            # For multi-word queries, allow spaces, dots, or hyphens between words.
             words = [re.escape(word) for word in query.split()]
             raw_pattern = r'.*'.join(words)
         else:
-            # For single-word queries, use a flexible substring search.
             raw_pattern = re.escape(query)
 
         try:
@@ -186,7 +193,6 @@ async def get_search_results(chat_id, query, file_type=None, max_results=None, o
     if file_type:
         filter_mongo["file_type"] = file_type
     
-    # The rest of the function remains the same, using parallel queries.
     if ULTRA_FAST_MODE:
         limit = max_results + 1
         find_tasks = [Media.find(filter_mongo).sort("$natural", -1).skip(offset).limit(limit).to_list(length=limit)]
