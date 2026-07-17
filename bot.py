@@ -47,12 +47,20 @@ ppath = "plugins/*.py"
 files = glob.glob(ppath)
 
 async def dreamxbotz_start():
-    print('\n\nInitalizing DreamxBotz')
+    # 1. Added explicit flush on baseline launch string
+    print('\n\nInitalizing DreamxBotz', flush=True)
+    
+    print("STEP A", flush=True)
     await dreamxbotz.start()
+    print("STEP B", flush=True)
+    
     bot_info = await dreamxbotz.get_me()
+    print("STEP C", flush=True)
+    
     dreamxbotz.username = bot_info.username
     await initialize_clients()
 
+    print("STEP D", flush=True)
     for name in files:
         with open(name) as a:
             patt = Path(a.name)
@@ -63,8 +71,9 @@ async def dreamxbotz_start():
             load = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(load)
             sys.modules["plugins." + plugin_name] = load
-            print("DreamxBotz Imported => " + plugin_name)
+            print("DreamxBotz Imported => " + plugin_name, flush=True)
 
+    print("STEP E", flush=True)
     if ON_HEROKU:
         asyncio.create_task(ping_server()) 
 
@@ -72,17 +81,19 @@ async def dreamxbotz_start():
     temp.BANNED_USERS = b_users
     temp.BANNED_CHATS = b_chats
 
-    # Initialize Local Primary Collections Indexes First
+    # 5. Primary collections indexing evaluation wrap points
+    print("STEP F", flush=True)
     await Media.ensure_indexes()
+    print("STEP G", flush=True)
 
     # Verify backup O(1) matching parameters safely on the cluster
     await init_backup_indexes()
 
     if MULTIPLE_DB:
         await Media2.ensure_indexes()
-        print("Multiple Database Mode On. Now Files Will Be Save In Second DB If First DB Is Full")
+        print("Multiple Database Mode On. Now Files Will Be Save In Second DB If First DB Is Full", flush=True)
     else:
-        print("Single DB Mode On ! Files Will Be Save In First Database")
+        print("Single DB Mode On ! Files Will Be Save In First Database", flush=True)
 
     me = await dreamxbotz.get_me()
     temp.ME = me.id
@@ -118,10 +129,12 @@ async def dreamxbotz_start():
             await migrate_main()
             logging.info("Backup migration finished.")
         except Exception:
-            logging.exception("Backup migration crashed.")
+            logging.exception("Background migration crashed.")
 
-    # Safely dispatch onto background loop execution profile right before entering idle block
+    # 6. Non-blocking worker loop schedule trace integration
+    print("STEP H", flush=True)
     dreamxbotz.loop.create_task(start_migration())
+    print("STEP I", flush=True)
 
     await idle()
 
@@ -132,12 +145,14 @@ if __name__ == '__main__':
             loop.run_until_complete(dreamxbotz_start())
             break  
         except FloodWait as e:
-            print(f"FloodWait! Sleeping for {e.value} seconds.")
+            print(f"FloodWait! Sleeping for {e.value} seconds.", flush=True)
             time.sleep(e.value) 
         except KeyboardInterrupt:
             logging.info('Service Stopped Bye 👋')
             break
-        except Exception:
-            # Fatal Error Catcher: Forces raw unbuffered output trace directly onto standard error streams
+        except Exception as e:
+            # 7. Enhanced Trace Catcher: Print clean explicit exception state stacks to stdout
+            import traceback
+            traceback.print_exc()
             logging.exception("Fatal startup error")
             break
