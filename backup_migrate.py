@@ -88,7 +88,11 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
         logger.info(f"[{partition_label}] Resuming page timeline from token slice: {start_after_id}")
 
     logger.info(f"[{partition_label}] Creating data cursor...")
+    print("DEBUG 1", flush=True)
+
     cursor = collection_class.find(query_filter).sort("$natural", 1)
+
+    print("DEBUG 2", flush=True)
     logger.info(f"[{partition_label}] Cursor created successfully.")
 
     local_loop_counter = 0
@@ -98,7 +102,9 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
 
     # Infinite structural chunking pipeline (OOM Protected)
     while True:
+        print("DEBUG 3", flush=True)
         docs = await cursor.to_list(length=100)
+        print(f"DEBUG 4: loaded {len(docs)} docs", flush=True)
 
         # Drop out of execution loops gracefully if the final target batch slice returns empty
         if not docs:
