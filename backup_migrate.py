@@ -103,7 +103,7 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
     for file_doc in docs:
         local_loop_counter += 1
         _sync_stats["processed"] += 1
-        
+
         current_id = file_doc.file_id
         last_processed_id = current_id
 
@@ -170,18 +170,27 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
 
 async def main():
     """Main application orchestrator layer handling startup validations and processing chains."""
+    # Change 1: Force standard unbuffered print strings to isolate entry point logic from active logging filters
+    print(">>> ENTERED backup_migrate.main() <<<", flush=True)
     logger.info(">>> ENTERED backup_migrate.main() <<<")
+    
     _sync_stats["start_timestamp"] = time.time()
     logger.info("[MIGRATION INITIATED] Verifying system locks and environmental layers...")
 
     # Enforce single-worker running constraints atomically
     if not await acquire_migration_lock():
+        print("[MIGRATION ABORTED] Lock collision detected on cluster.", flush=True)
         logger.critical("[MIGRATION ABORTED] Another migration instance is currently active on the cluster.")
         return
 
     try:
         # Calculate baseline data scope boundaries
         total_files = await count_total_files()
+        
+        # Change 2: Diagnostic output checkpoint to trap empty returns or driver count blocks
+        print(f"TOTAL FILES DETECTED = {total_files}", flush=True)
+        logger.info(f"TOTAL FILES DETECTED = {total_files}")
+        
         if total_files == 0:
             logger.warning("[MIGRATION ABORTED] Target indexing pools evaluate to 0 entries. Exiting loop.")
             return
