@@ -77,8 +77,7 @@ async def count_total_files() -> int:
 
 
 async def migrate_collection_partition(collection_class, partition_label: str, start_after_id: str) -> int:
-    """Streams documents sequentially using standard project array structures to protect container execution."""
-    # Edit 4: Diagnostic entry checkpoint at the function gate
+    """Streams documents sequentially using memory-safe async iteration to protect container RAM."""
     print(f"ENTER migrate_collection_partition({partition_label})", flush=True)
 
     query_filter = {}
@@ -92,18 +91,13 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
     cursor = collection_class.find(query_filter).sort("file_id", 1)
     logger.info(f"[{partition_label}] Cursor created successfully.")
 
-    # Convert cursor stream to a full sequence array matching the rest of the project handlers
-    logger.info(f"[{partition_label}] Resolving database elements into list array...")
-    docs = await cursor.to_list(length=None)
-    logger.info(f"[{partition_label}] Successfully retrieved {len(docs)} array documents from collection.")
-
     local_loop_counter = 0
     last_processed_id = start_after_id
 
-    logger.info(f"[{partition_label}] Beginning data processing loop...")
+    # Step 2 & 3 Fix: Stream documents one by one using low-RAM async streaming iteration
+    logger.info(f"[{partition_label}] Beginning streaming migration...")
 
-    # Iterate through extracted structures safely using standard sequential steps
-    for file_doc in docs:
+    async for file_doc in cursor:
         local_loop_counter += 1
         _sync_stats["processed"] += 1
 
@@ -198,8 +192,6 @@ async def main():
 
         # Extract system recovery markers from prior snapshot states
         progress_state = await get_progress()
-        
-        # Edit 1: Step 1 Placement
         print("STEP 1: get_progress() completed", flush=True)
 
         current_stage_db = progress_state["last_db"]
@@ -208,8 +200,6 @@ async def main():
 
         # Synchronize interval tracking clocks
         init_eta_tracker(total_files, _sync_stats["processed"])
-        
-        # Edit 2: Step 2 Placement
         print("STEP 2: init_eta_tracker() completed", flush=True)
 
         logger.info(f"[MIGRATION MATRIX] Total Files: {total_files} | Resuming from: {_sync_stats['processed']}")
@@ -217,8 +207,6 @@ async def main():
         # --- Phase I: Primary Cluster Sync Task ---
         if current_stage_db == "Media":
             logger.info("[MIGRATION POOL] Extracting records from Primary Cluster Partition [Media]...")
-            
-            # Edit 3: Step 3 Placement
             print("STEP 3: About to migrate Media", flush=True)
 
             await migrate_collection_partition(
