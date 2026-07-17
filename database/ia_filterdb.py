@@ -14,6 +14,12 @@ from utils import get_settings, save_group_settings
 from datetime import datetime, timedelta
 import asyncio
 
+# Safe import wrapper to prevent startup crashes if backup_utils is missing
+try:
+    from backup_utils import backup_new_file
+except ImportError:
+    backup_new_file = None
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 # ---------------------------------------------------------
@@ -136,6 +142,20 @@ async def save_file(media):
         return False, 2
     try:
         await record.commit()
+
+        # Conditionally execute backup pipeline if the module layout is present
+        if backup_new_file:
+            try:
+                await backup_new_file(
+                    file_id=file_id,
+                    file_ref=file_ref,
+                    file_name=file_name,
+                    caption=media.caption.html if media.caption else None,
+                    file_type=media.file_type
+                )
+            except Exception as e:
+                logger.exception(f"Backup failed for {file_name}: {e}")
+
     except DuplicateKeyError:
         logger.info(
             f"[SKIP] DuplicateKey: '{file_name}' already exists in {target_db} DB."
@@ -146,6 +166,7 @@ async def save_file(media):
             f"[ERROR] Failed commit of '{file_name}' to {target_db} DB.", exc_info=e
         )
         return False, 3
+        
     logger.info(f"[SUCCESS] '{file_name}' saved to {target_db} DB.")
     return True, 1
 
@@ -164,7 +185,7 @@ async def get_search_results(chat_id, query, file_type=None, max_results=None, o
     if isinstance(query, list):
         raw_pattern = '|'.join(re.escape(q.strip()) for q in query if q.strip())
         regex_list = [re.compile(raw_pattern, re.IGNORECASE)] if raw_pattern else []
-        
+
         if USE_CAPTION_FILTER:
             filter_mongo = {"$or": ([{"file_name": r} for r in regex_list] + [{"caption": r} for r in regex_list])}
         else:
@@ -173,7 +194,7 @@ async def get_search_results(chat_id, query, file_type=None, max_results=None, o
         query = query.strip()
         if not query:
             return [], None, 0
-            
+
         if ' ' in query:
             words = [re.escape(word) for word in query.split()]
             raw_pattern = r'.*'.join(words)
@@ -192,11 +213,10 @@ async def get_search_results(chat_id, query, file_type=None, max_results=None, o
 
     if file_type:
         filter_mongo["file_type"] = file_type
-    
+
     if ULTRA_FAST_MODE:
-        # Dynamically scale execution limit based on page depth to ensure all deep content is accessible
         fetch_limit = max(offset + max_results + 100, 200)
-        
+
         find_tasks = [
             Media.find(filter_mongo).sort("$natural", -1).limit(fetch_limit).to_list(length=fetch_limit)
         ]
@@ -204,15 +224,13 @@ async def get_search_results(chat_id, query, file_type=None, max_results=None, o
             find_tasks.append(
                 Media2.find(filter_mongo).sort("$natural", -1).limit(fetch_limit).to_list(length=fetch_limit)
             )
-        
+
         results = await asyncio.gather(*find_tasks)
-        
-        # Flatten raw database collections
+
         all_matched_files = []
         for result in results:
             all_matched_files.extend(result)
-            
-        # Precise de-duplication pass preserving collection chronologies
+
         seen_ids = set()
         unique_files = []
         for f in all_matched_files:
@@ -220,44 +238,42 @@ async def get_search_results(chat_id, query, file_type=None, max_results=None, o
                 seen_ids.add(f.file_id)
                 unique_files.append(f)
 
-        # Apply unified global memory slicing for perfectly aligned pagination
         actual_total = len(unique_files)
         sliced_files = unique_files[offset : offset + max_results]
-        
+
         has_next_page = actual_total > (offset + max_results)
         next_offset = offset + len(sliced_files) if has_next_page else ""
-        
+
         return sliced_files, next_offset, actual_total
 
     else:
-        # Standard robust count-skipping pagination engine fallback
         count_tasks = [Media.count_documents(filter_mongo)]
         find_tasks = [Media.find(filter_mongo).sort("$natural", -1).skip(offset).limit(max_results).to_list(length=max_results)]
 
         if MULTIPLE_DB:
             count_tasks.append(Media2.count_documents(filter_mongo))
             find_tasks.append(Media2.find(filter_mongo).sort("$natural", -1).skip(offset).limit(max_results).to_list(length=max_results))
-        
+
         count_results, find_results = await asyncio.gather(
             asyncio.gather(*count_tasks),
             asyncio.gather(*find_tasks)
         )
-        
+
         total_results = sum(count_results)
-        
+
         files = find_results[0]
         if MULTIPLE_DB and len(find_results) > 1:
             files.extend(find_results[1])
-            
+
         seen_ids = set()
         unique_files = []
         for f in files:
             if f.file_id not in seen_ids:
                 seen_ids.add(f.file_id)
                 unique_files.append(f)
-        
+
         unique_files = unique_files[:max_results]
-        
+
         next_offset = offset + len(unique_files)
         if next_offset >= total_results:
             next_offset = ""
@@ -297,17 +313,17 @@ async def get_bad_files(query, file_type=None):
 
 async def get_file_details(query):
     filter = {"file_id": query}
-    
+
     tasks = [Media.find(filter).to_list(length=1)]
     if MULTIPLE_DB:
         tasks.append(Media2.find(filter).to_list(length=1))
-        
+
     results = await asyncio.gather(*tasks)
-    
+
     for filedetails in results:
         if filedetails:
             return filedetails
-            
+
     return []
 
 
