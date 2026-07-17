@@ -21,7 +21,7 @@ from dreamxbotz.util.keepalive import ping_server
 from dreamxbotz.Bot.clients import initialize_clients
 from PIL import Image
 
-# Step 1: Reintroduce the backup database indexing helper only
+# Step 1 Integration: Load the database indexing validation hooks only
 from backup_utils import init_backup_indexes
 
 Image.MAX_IMAGE_PIXELS = 500_000_000
@@ -71,10 +71,10 @@ async def dreamxbotz_start():
     temp.BANNED_USERS = b_users
     temp.BANNED_CHATS = b_chats
 
-    # 1. Initialize Local Primary Collections Indexes First
+    # Initialize Local Primary Collections Indexes First
     await Media.ensure_indexes()
 
-    # 2. Step 1 Action: Verify primary backup O(1) constraints safely
+    # Step 1 Execution: Verify backup O(1) matching parameters safely on the cluster
     await init_backup_indexes()
 
     if MULTIPLE_DB:
