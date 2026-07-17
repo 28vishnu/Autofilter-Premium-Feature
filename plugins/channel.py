@@ -17,6 +17,8 @@ from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+logger.info("✅ channel.py loaded")
+
 # Precomputed sets for faster lookups
 IGNORE_WORDS = {
     "rarbg", "dub", "sub", "sample", "mkv", "aac", "combined",
