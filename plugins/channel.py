@@ -52,6 +52,7 @@ CAPTION_LANGUAGES = {
     "jpn": "Japanese", "japanese": "Japanese",
 }
 
+# OTT Platforms Mapping
 OTT_PLATFORMS = {
     "nf": "Netflix", "netflix": "Netflix",
     "sonyliv": "SonyLiv", "sony": "SonyLiv", "sliv": "SonyLiv",
@@ -126,7 +127,7 @@ def schedule_update(bot, base_name, delay=5):
     if handle := pending_updates.get(base_name):
         if not handle.cancelled():
             handle.cancel()
-    
+
     loop = asyncio.get_event_loop()
     pending_updates[base_name] = loop.call_later(
         delay,
@@ -262,6 +263,19 @@ async def _process_with_lock(bot, filename, caption, media_info, base_name, proc
                 details = await get_movie_details(base_name) or {}
         else:
             details = await get_movie_details(base_name) or {}
+
+        # Rolling 180-day filter strategy pass with layout validation
+        release_date = details.get("release_date")
+        if release_date:
+            try:
+                release_str = str(release_date).strip()
+                if re.match(r"^\d{4}-\d{2}-\d{2}$", release_str):
+                    release = datetime.strptime(release_str, "%Y-%m-%d")
+                    if (datetime.now() - release).days > 180:
+                        logger.info(f"Skipping old movie notification: {base_name}")
+                        return
+            except Exception:
+                pass
 
         raw_genres = details.get("genres", "N/A")
         if isinstance(raw_genres, str):
