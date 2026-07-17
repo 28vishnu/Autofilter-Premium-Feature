@@ -111,15 +111,16 @@ async def dreamxbotz_start():
 
     dreamxbotz.loop.create_task(keep_alive())
 
-    # 3. Safely wrap background migration loop to catch and log hidden exceptions
+    # Task Execution Wrapper
     async def start_migration():
         try:
             await migrate_main()
         except Exception:
             logging.exception("Background migration crashed")
 
-    logging.info("Starting background backup migration task pipeline...")
-    dreamxbotz.loop.create_task(start_migration())
+    # Debug Modification: Await synchronously to trace any initial execution deadlock or failure path directly
+    logging.info("Starting backup migration synchronously for diagnostics...")
+    await start_migration()
 
     await idle()
 
