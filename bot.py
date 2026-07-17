@@ -137,3 +137,7 @@ if __name__ == '__main__':
         except KeyboardInterrupt:
             logging.info('Service Stopped Bye 👋')
             break
+        except Exception:
+            # Fatal Error Catcher: Forces raw unbuffered output trace directly onto standard error streams
+            logging.exception("Fatal startup error")
+            break
