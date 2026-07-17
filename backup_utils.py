@@ -2,215 +2,271 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timezone
-from motor.motor_asyncio import AsyncIOMotorClient
-from pyrogram.errors import FloodWait, MessageIdInvalid, ChatAdminRequired, BadRequest, RPCError
-from info import DATABASE_URI, DATABASE_NAME, BACKUP_CHANNEL
+from database.ia_filterdb import Media, Media2
+from info import MULTIPLE_DB
+from pymongo.errors import DuplicateKeyError
+from backup_utils import (
+    backup_new_file, get_progress, save_progress, clear_progress,
+    init_eta_tracker, log_progress, db
+)
 
+# Configure elegant logging formats matching system defaults
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
-# --- Mongo Engine Layer Connection ---
-client = AsyncIOMotorClient(DATABASE_URI)
-db = client[DATABASE_NAME]
+# References for atomic processing locks
+migration_lock = db["migration_lock"]
 
-# Collections for deduplication tracking and state synchronization
-backup_files = db["backup_files"]
-backup_progress = db["backup_progress"]
-
-_migration_metrics = {
-    "start_time": None,
-    "processed_count": 0,
-    "total_target": 0
+# Structural Performance Registry Matrix
+_sync_stats = {
+    "processed": 0,
+    "success": 0,
+    "failed": 0,
+    "skipped": 0,
+    "start_timestamp": None
 }
 
 
-async def init_backup_indexes():
-    """Enforces explicit index parameters to maintain O(1) constraints on startup."""
+async def acquire_migration_lock() -> bool:
+    """Acquires an atomic database execution lock to prevent parallel worker loops."""
     try:
-        await backup_files.create_index("_id")
-        await backup_progress.create_index("_id")
-        logger.info("[BACKUP INDEX] Primary O(1) identity constraints successfully verified across collections.")
+        # Enforce tracking index on lock collection safely before atomic operation
+        await migration_lock.create_index("_id")
+
+        result = await migration_lock.find_one_and_update(
+            {"_id": "lock", "running": {"$ne": True}},
+            {
+                "$set": {
+                    "running": True,
+                    "acquired_at": datetime.now(timezone.utc)
+                }
+            },
+            upsert=True,
+            return_document=True
+        )
+        return result is not None
     except Exception as e:
-        logger.error(f"[BACKUP INDEX] Failed to enforce index parameters: {e}")
-
-
-async def backup_new_file(file_id: str, file_ref: str, file_name: str, caption: str = None, 
-                          file_type: str = "document", original_chat_id: int = None, 
-                          original_msg_id: int = None) -> bool:
-    """
-    Core entry point hook invoked immediately following document persistence.
-    Protects execution by safely filtering duplicate file frames before hitting Telegram.
-    """
-    # Environmental Guard Pass
-    if BACKUP_CHANNEL == -100 or not BACKUP_CHANNEL:
-        logger.error("[BACKUP] BACKUP_CHANNEL environment variable is missing or misconfigured.")
+        logger.error(f"[MIGRATION LOCK] Error acquiring migration lock state: {e}")
         return False
 
-    if await is_duplicate(file_id):
-        return False
 
-    from dreamxbotz.Bot import dreamxbotz
-    if not dreamxbotz:
-        logger.error("[BACKUP] dreamxbotz Client engine instantiation context is missing.")
-        return False
-
-    msg_id = await retry_upload(
-        bot=dreamxbotz,
-        file_id=file_id,
-        file_name=file_name,
-        caption=caption,
-        file_type=file_type,
-        chat_id=original_chat_id,
-        msg_id=original_msg_id
-    )
-
-    if msg_id:
-        await save_backup_record(file_id, msg_id, file_name, file_type)
-        logger.info(f"[BACKUP SUCCESS] Successfully mirrored asset: '{file_name}' -> {BACKUP_CHANNEL}")
-        return True
-
-    return False
-
-
-async def is_duplicate(file_id: str) -> bool:
-    doc = await backup_files.find_one({"_id": file_id}, {"_id": 1})
-    return doc is not None
-
-
-async def save_backup_record(file_id: str, backup_message_id: int, file_name: str, file_type: str):
-    """Commits explicit tracking references to protect ongoing operation loops and audit verification."""
+async def release_migration_lock():
+    """Gently sets the execution lock status to inactive upon completion."""
     try:
-        await backup_files.update_one(
-            {"_id": file_id},
-            {"$set": {
-                "backup_message": backup_message_id, 
-                "file_name": file_name,
-                "file_type": file_type,
-                "backup_date": datetime.now(timezone.utc)
-            }},
-            upsert=True
+        await migration_lock.update_one(
+            {"_id": "lock"},
+            {"$set": {"running": False, "released_at": datetime.now(timezone.utc)}}
         )
     except Exception as e:
-        logger.error(f"[BACKUP] Error tracking backup metadata reference: {e}")
+        logger.error(f"[MIGRATION LOCK] Error releasing execution lock string: {e}")
 
 
-async def retry_upload(bot, file_id: str, file_name: str, caption: str, file_type: str, 
-                       chat_id: int = None, msg_id: int = None, max_retries: int = 5) -> int:
-    for attempt in range(1, max_retries + 1):
+async def count_total_files() -> int:
+    """Computes total storage record dimensions safely by accessing the uMongo counting framework directly."""
+    total = 0
+    try:
+        total += await Media.count_documents({})
+        if MULTIPLE_DB:
+            total += await Media2.count_documents({})
+    except Exception as e:
+        logger.error(f"[MIGRATION COUNT] Error calculating collection boundaries: {e}")
+    return total
+
+
+async def migrate_collection_partition(collection_class, partition_label: str, start_after_id: str) -> int:
+    """Streams documents sequentially using standard project array structures to protect container execution."""
+    # Checkpoint 4: Trace arrival inside the data stream constructor wrapper
+    print(f"ENTER migrate_collection_partition({partition_label})", flush=True)
+
+    query_filter = {}
+
+    # Enforce target boundary criteria using the model-mapped attribute name
+    if start_after_id:
+        query_filter["file_id"] = {"$gt": start_after_id}
+        logger.info(f"[{partition_label}] Resuming page timeline from token slice: {start_after_id}")
+
+    logger.info(f"[{partition_label}] Creating data cursor...")
+    cursor = collection_class.find(query_filter).sort("file_id", 1)
+    logger.info(f"[{partition_label}] Cursor created successfully.")
+
+    # Convert cursor stream to a full sequence array matching the rest of the project handlers
+    logger.info(f"[{partition_label}] Resolving database elements into list array...")
+    docs = await cursor.to_list(length=None)
+    logger.info(f"[{partition_label}] Successfully retrieved {len(docs)} array documents from collection.")
+
+    local_loop_counter = 0
+    last_processed_id = start_after_id
+
+    logger.info(f"[{partition_label}] Beginning data processing loop...")
+
+    # Iterate through extracted structures safely using standard sequential steps
+    for file_doc in docs:
+        local_loop_counter += 1
+        _sync_stats["processed"] += 1
+
+        current_id = file_doc.file_id
+        last_processed_id = current_id
+
         try:
-            return await upload_cached_media(bot, file_id, file_name, caption, file_type, chat_id, msg_id)
-        except FloodWait as e:
-            wait_time = e.value + 3
-            logger.warning(f"[BACKUP] Hit rate limits. Sleeping for {wait_time}s (Attempt {attempt}/{max_retries}).")
-            await asyncio.sleep(wait_time)
-        except MessageIdInvalid:
-            logger.error(f"[BACKUP] Source channel link broken for msg ID {msg_id}. Falling back to cached file ID dispatch.")
-            chat_id = msg_id = None
-        except ChatAdminRequired:
-            logger.error(f"[BACKUP] Permissions missing. Check bot access permissions in backup channel: {BACKUP_CHANNEL}")
-            return 0
-        except (BadRequest, RPCError) as e:
-            logger.warning(f"[BACKUP] Telegram infrastructure warning encountered: {e} (Attempt {attempt}/{max_retries}). Retrying configuration window...")
-            await asyncio.sleep(2 * attempt)
-        except Exception:
-            logger.exception(f"[BACKUP] Unexpected backup error during attempt {attempt}/{max_retries}")
-            await asyncio.sleep(2 * attempt)
-    return 0
+            # Cleanly extract fields using valid uMongo document object names
+            file_id = file_doc.file_id
+            file_ref = getattr(file_doc, "file_ref", None)
+            file_name = getattr(file_doc, "file_name", "Unknown File")
+            caption = getattr(file_doc, "caption", None)
+            file_type = getattr(file_doc, "file_type", "document")
 
+            # Dispatch transaction to backup layer utilities
+            backed_up = await backup_new_file(
+                file_id=file_id,
+                file_ref=file_ref,
+                file_name=file_name,
+                caption=caption,
+                file_type=file_type,
+                original_chat_id=None,
+                original_msg_id=None
+            )
 
-async def upload_cached_media(bot, file_id: str, file_name: str, caption: str, file_type: str, 
-                              chat_id: int = None, msg_id: int = None) -> int:
-    final_caption = caption or f"<b>File Name:</b> <code>{file_name}</code>"
+            # backup_new_file returns a boolean value (True if saved, False if skipped)
+            if backed_up:
+                _sync_stats["success"] += 1
+            else:
+                _sync_stats["skipped"] += 1
 
-    # Strategy Path A: High-speed native source copying
-    if chat_id and msg_id:
-        copied_msg = await bot.copy_message(
-            chat_id=BACKUP_CHANNEL,
-            from_chat_id=chat_id,
-            message_id=msg_id,
-            caption=final_caption
+            # Flush progress snapshots systematically every 100 iterations
+            if _sync_stats["processed"] % 100 == 0:
+                await log_progress(
+                    current_db=partition_label,
+                    current_id=current_id,
+                    total_processed=_sync_stats["processed"]
+                )
+
+            # High-Volume Health Progress Check (Every 1000 items)
+            if _sync_stats["processed"] % 1000 == 0:
+                logger.info(
+                    f"[HEALTH CHECK] Progress: {_sync_stats['processed']} | "
+                    f"Success: {_sync_stats['success']} | Skipped: {_sync_stats['skipped']} | "
+                    f"Failed: {_sync_stats['failed']}"
+                )
+
+            # Throttling guard to preserve Telegram endpoint balance limits
+            if local_loop_counter % 50 == 0:
+                await asyncio.sleep(0.2)
+
+        except Exception as e:
+            _sync_stats["failed"] += 1
+            logger.error(f"[{partition_label} ERROR] Processing failed for document ID {current_id}: {e}")
+            continue
+
+    # Boundary Fix: Always force-save trailing incomplete progress chunks at partition completion
+    if last_processed_id:
+        await save_progress(
+            last_db=partition_label,
+            last_id=str(last_processed_id),
+            processed_count=_sync_stats["processed"]
         )
-        return copied_msg.id
 
-    # Strategy Path B: Structural Fix — Map types to native explicit Pyrogram parameter keys
-    ft_lower = file_type.lower()
-    if ft_lower == "video":
-        sent_msg = await bot.send_video(chat_id=BACKUP_CHANNEL, video=file_id, caption=final_caption)
-    elif ft_lower == "audio":
-        sent_msg = await bot.send_audio(chat_id=BACKUP_CHANNEL, audio=file_id, caption=final_caption)
-    elif ft_lower == "photo":
-        sent_msg = await bot.send_photo(chat_id=BACKUP_CHANNEL, photo=file_id, caption=final_caption)
-    else:
-        sent_msg = await bot.send_document(chat_id=BACKUP_CHANNEL, document=file_id, caption=final_caption)
-
-    return sent_msg.id
+    return _sync_stats["processed"]
 
 
-# --- Dynamic Migration Progress Trackers ---
+async def main():
+    """Main application orchestrator layer handling startup validations and processing chains."""
+    print(">>> ENTERED backup_migrate.main() <<<", flush=True)
+    logger.info(">>> ENTERED backup_migrate.main() <<<")
+    
+    _sync_stats["start_timestamp"] = time.time()
+    logger.info("[MIGRATION INITIATED] Verifying system locks and environmental layers...")
 
-async def get_progress() -> dict:
-    doc = await backup_progress.find_one({"_id": "migration"})
-    if doc:
-        return {
-            "last_db": doc.get("last_db", "Media"),
-            "last_id": doc.get("last_id", None),
-            "processed": doc.get("processed", 0)
-        }
-    return {"last_db": "Media", "last_id": None, "processed": 0}
-
-
-async def save_progress(last_db: str, last_id: str, processed_count: int):
-    await backup_progress.update_one(
-        {"_id": "migration"},
-        {"$set": {
-            "last_db": last_db,
-            "last_id": last_id,
-            "processed": processed_count,
-            "updated_at": datetime.now(timezone.utc)
-        }},
-        upsert=True
-    )
-
-
-async def clear_progress():
-    await backup_progress.delete_one({"_id": "migration"})
-
-
-def init_eta_tracker(total_records: int, current_progress: int = 0):
-    _migration_metrics["start_time"] = time.time()
-    _migration_metrics["processed_count"] = current_progress
-    _migration_metrics["total_target"] = total_records
-
-
-async def log_progress(current_db: str, current_id: str, total_processed: int):
-    await save_progress(current_db, current_id, total_processed)
-
-    if not _migration_metrics["start_time"]:
-        _migration_metrics["start_time"] = time.time()
-        _migration_metrics["processed_count"] = total_processed
+    # Enforce single-worker running constraints atomically
+    if not await acquire_migration_lock():
+        print("[MIGRATION ABORTED] Lock collision detected on cluster.", flush=True)
+        logger.critical("[MIGRATION ABORTED] Another migration instance is currently active on the cluster.")
         return
 
-    if total_processed % 100 != 0:
-        return
+    try:
+        # Calculate baseline data scope boundaries
+        total_files = await count_total_files()
+        
+        print(f"TOTAL FILES DETECTED = {total_files}", flush=True)
+        logger.info(f"TOTAL FILES DETECTED = {total_files}")
+        
+        if total_files == 0:
+            logger.warning("[MIGRATION ABORTED] Target indexing pools evaluate to 0 entries. Exiting loop.")
+            return
 
-    elapsed = time.time() - _migration_metrics["start_time"]
-    delta_items = total_processed - _migration_metrics["processed_count"]
+        # Extract system recovery markers from prior snapshot states
+        progress_state = await get_progress()
+        # Checkpoint 1: Confirm snapshot extraction didn't raise GeneratorExit
+        print("STEP 1: get_progress() completed", flush=True)
 
-    if elapsed <= 0 or delta_items <= 0:
-        return
+        current_stage_db = progress_state["last_db"]
+        last_id = progress_state["last_id"]
+        _sync_stats["processed"] = progress_state["processed"]
 
-    speed = delta_items / elapsed
-    remaining = max(0, _migration_metrics["total_target"] - total_processed)
-    eta_seconds = remaining / speed if speed > 0 else 0
+        # Synchronize interval tracking clocks
+        init_eta_tracker(total_files, _sync_stats["processed"])
+        # Checkpoint 2: Confirm metrics registry initialized without loop cancellation
+        print("STEP 2: init_eta_tracker() completed", flush=True)
 
-    hours, remainder = divmod(int(eta_seconds), 3600)
-    minutes, _ = divmod(remainder, 60)
-    eta_str = f"{hours}h {minutes}m" if hours > 0 else f"{minutes}m"
+        logger.info(f"[MIGRATION MATRIX] Total Files: {total_files} | Resuming from: {_sync_stats['processed']}")
 
-    logger.info(
-        f"[MIGRATION MONITOR] Pool: {total_processed}/{_migration_metrics['total_target']} "
-        f"| Partition: {current_db} | Current Interval Speed: {speed:.1f} items/sec | ETA: {eta_str}"
-    )
+        # --- Phase I: Primary Cluster Sync Task ---
+        if current_stage_db == "Media":
+            logger.info("[MIGRATION POOL] Extracting records from Primary Cluster Partition [Media]...")
+            # Checkpoint 3: Verify entry gate boundaries before firing positional logic
+            print("STEP 3: About to migrate Media", flush=True)
 
-    # Refresh tracking coordinates to measure the upcoming interval frame accurately
-    _migration_metrics["processed_count"] = total_processed
-    _migration_metrics["start_time"] = time.time()
+            await migrate_collection_partition(
+                collection_class=Media,
+                partition_label="Media",
+                start_after_id=last_id
+            )
+            # Progress Tracking State Machine Transition Pass
+            current_stage_db = "Media2"
+            last_id = None
+
+        # --- Phase II: Secondary Cluster Sync Task ---
+        if MULTIPLE_DB and current_stage_db == "Media2":
+            logger.info("[MIGRATION POOL] Extracting records from Secondary Cluster Partition [Media2]...")
+            await migrate_collection_partition(
+                collection_class=Media2,
+                partition_label="Media2",
+                start_after_id=last_id
+            )
+
+        # Drop state sync tracking documents once full sync targets are achieved
+        await clear_progress()
+
+        # Calculate process completion duration metrics
+        runtime_duration = time.time() - _sync_stats["start_timestamp"]
+        hours, remainder = divmod(int(runtime_duration), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        duration_str = f"{hours}h {minutes}m {seconds}s" if hours > 0 else f"{minutes}m {seconds}s"
+
+        logger.info(
+            f"\n"
+            f"==================================================\n"
+            f"       HISTORICAL MIGRATION PASS COMPLETED        \n"
+            f"==================================================\n"
+            f" 🗓️ Duration : {duration_str}\n"
+            f" 📂 Total Evaluated : {_sync_stats['processed']}\n"
+            f" ✅ Saved Backups  : {_sync_stats['success']}\n"
+            f" 🔁 Skipped (Dupe) : {_sync_stats['skipped']}\n"
+            f" ❌ Fault Failures : {_sync_stats['failed']}\n"
+            f"=================================================="
+        )
+
+    except asyncio.CancelledError:
+        logger.warning("[MIGRATION WARNING] Execution loop cancelled by system signal (SIGTERM/SIGINT). Progress saved.")
+        raise
+    except Exception as e:
+        logger.exception(f"[MIGRATION PANIC] Critical error encountered inside primary execution loop: {e}")
+    finally:
+        # Ensure the processing lock is safely flipped to False regardless of completion status
+        await release_migration_lock()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
