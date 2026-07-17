@@ -91,8 +91,8 @@ async def check_db_size(db):
         return 0
 
 
-async def save_file(media):
-    """Save file in database, with detailed logging."""
+async def save_file(media, original_msg=None):
+    """Save file in database, with detailed logging and active structural routing."""
     file_id, file_ref = unpack_new_file_id(media.file_id)
 
     logger.info(f"[INDEX] File: {media.file_name}")
@@ -146,12 +146,18 @@ async def save_file(media):
         # Conditionally execute backup pipeline if the module layout is present
         if backup_new_file:
             try:
+                # Safely parse structural copy credentials if incoming context is available
+                chat_id = original_msg.chat.id if original_msg and getattr(original_msg, "chat", None) else None
+                msg_id = original_msg.id if original_msg else None
+
                 await backup_new_file(
                     file_id=file_id,
                     file_ref=file_ref,
                     file_name=file_name,
                     caption=media.caption.html if media.caption else None,
-                    file_type=media.file_type
+                    file_type=media.file_type,
+                    original_chat_id=chat_id,
+                    original_msg_id=msg_id
                 )
             except Exception as e:
                 logger.exception(f"Backup failed for {file_name}: {e}")
@@ -166,7 +172,7 @@ async def save_file(media):
             f"[ERROR] Failed commit of '{file_name}' to {target_db} DB.", exc_info=e
         )
         return False, 3
-        
+
     logger.info(f"[SUCCESS] '{file_name}' saved to {target_db} DB.")
     return True, 1
 
