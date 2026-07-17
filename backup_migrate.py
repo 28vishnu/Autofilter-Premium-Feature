@@ -78,6 +78,9 @@ async def count_total_files() -> int:
 
 async def migrate_collection_partition(collection_class, partition_label: str, start_after_id: str) -> int:
     """Streams documents sequentially using standard project array structures to protect container execution."""
+    # Edit 4: Diagnostic entry checkpoint at the function gate
+    print(f"ENTER migrate_collection_partition({partition_label})", flush=True)
+
     query_filter = {}
 
     # Enforce target boundary criteria using the model-mapped attribute name
@@ -170,10 +173,9 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
 
 async def main():
     """Main application orchestrator layer handling startup validations and processing chains."""
-    # Change 1: Force standard unbuffered print strings to isolate entry point logic from active logging filters
     print(">>> ENTERED backup_migrate.main() <<<", flush=True)
     logger.info(">>> ENTERED backup_migrate.main() <<<")
-    
+
     _sync_stats["start_timestamp"] = time.time()
     logger.info("[MIGRATION INITIATED] Verifying system locks and environmental layers...")
 
@@ -186,28 +188,39 @@ async def main():
     try:
         # Calculate baseline data scope boundaries
         total_files = await count_total_files()
-        
-        # Change 2: Diagnostic output checkpoint to trap empty returns or driver count blocks
+
         print(f"TOTAL FILES DETECTED = {total_files}", flush=True)
         logger.info(f"TOTAL FILES DETECTED = {total_files}")
-        
+
         if total_files == 0:
             logger.warning("[MIGRATION ABORTED] Target indexing pools evaluate to 0 entries. Exiting loop.")
             return
 
         # Extract system recovery markers from prior snapshot states
         progress_state = await get_progress()
+        
+        # Edit 1: Step 1 Placement
+        print("STEP 1: get_progress() completed", flush=True)
+
         current_stage_db = progress_state["last_db"]
         last_id = progress_state["last_id"]
         _sync_stats["processed"] = progress_state["processed"]
 
         # Synchronize interval tracking clocks
         init_eta_tracker(total_files, _sync_stats["processed"])
+        
+        # Edit 2: Step 2 Placement
+        print("STEP 2: init_eta_tracker() completed", flush=True)
+
         logger.info(f"[MIGRATION MATRIX] Total Files: {total_files} | Resuming from: {_sync_stats['processed']}")
 
         # --- Phase I: Primary Cluster Sync Task ---
         if current_stage_db == "Media":
             logger.info("[MIGRATION POOL] Extracting records from Primary Cluster Partition [Media]...")
+            
+            # Edit 3: Step 3 Placement
+            print("STEP 3: About to migrate Media", flush=True)
+
             await migrate_collection_partition(
                 collection_class=Media,
                 partition_label="Media",
