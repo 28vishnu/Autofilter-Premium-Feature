@@ -141,7 +141,7 @@ async def upload_cached_media(bot, file_id: str, file_name: str, caption: str, f
         sent_msg = await bot.send_photo(chat_id=BACKUP_CHANNEL, photo=file_id, caption=final_caption)
     else:
         sent_msg = await bot.send_document(chat_id=BACKUP_CHANNEL, document=file_id, caption=final_caption)
-        
+
     return sent_msg.id
 
 
@@ -194,7 +194,7 @@ async def log_progress(current_db: str, current_id: str, total_processed: int):
 
     elapsed = time.time() - _migration_metrics["start_time"]
     delta_items = total_processed - _migration_metrics["processed_count"]
-    
+
     if elapsed <= 0 or delta_items <= 0:
         return
 
