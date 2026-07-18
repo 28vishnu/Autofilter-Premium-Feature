@@ -42,17 +42,23 @@ async def backup_new_file(file_id: str, file_ref: str, file_name: str, caption: 
     """
     # Environmental Guard Pass
     if BACKUP_CHANNEL == -100 or not BACKUP_CHANNEL:
+        print("[UTILITY DEBUG] BACKUP_CHANNEL missing or misconfigured.", flush=True)
         logger.error("[BACKUP] BACKUP_CHANNEL environment variable is missing or misconfigured.")
         return False
 
+    print(f"[UTILITY DEBUG] Checking duplicate for: {file_name}", flush=True)
     if await is_duplicate(file_id):
+        print(f"[UTILITY DEBUG] Duplicate skipped: {file_name}", flush=True)
         return False
 
+    print(f"[UTILITY DEBUG] Importing client engine context for: {file_name}", flush=True)
     from dreamxbotz.Bot import dreamxbotz
     if not dreamxbotz:
+        print("[UTILITY DEBUG] dreamxbotz Client engine context is missing.", flush=True)
         logger.error("[BACKUP] dreamxbotz Client engine instantiation context is missing.")
         return False
 
+    print(f"[UTILITY DEBUG] Handing over to retry_upload for: {file_name}", flush=True)
     msg_id = await retry_upload(
         bot=dreamxbotz,
         file_id=file_id,
@@ -63,6 +69,7 @@ async def backup_new_file(file_id: str, file_ref: str, file_name: str, caption: 
         msg_id=original_msg_id
     )
 
+    print(f"[UTILITY DEBUG] retry_upload returned msg_id: {msg_id} for {file_name}", flush=True)
     if msg_id:
         await save_backup_record(file_id, msg_id, file_name, file_type)
         logger.info(f"[BACKUP SUCCESS] Successfully mirrored asset: '{file_name}' -> {BACKUP_CHANNEL}")
@@ -97,21 +104,29 @@ async def retry_upload(bot, file_id: str, file_name: str, caption: str, file_typ
                        chat_id: int = None, msg_id: int = None, max_retries: int = 5) -> int:
     for attempt in range(1, max_retries + 1):
         try:
-            return await upload_cached_media(bot, file_id, file_name, caption, file_type, chat_id, msg_id)
+            print(f"[UTILITY DEBUG] Attempting upload ({attempt}/{max_retries}) via upload_cached_media for: {file_name}", flush=True)
+            res = await upload_cached_media(bot, file_id, file_name, caption, file_type, chat_id, msg_id)
+            print(f"[UTILITY DEBUG] upload_cached_media success on attempt {attempt} for: {file_name}", flush=True)
+            return res
         except FloodWait as e:
             wait_time = e.value + 3
+            print(f"[UTILITY DEBUG] FloodWait hit: must wait {wait_time}s for: {file_name}", flush=True)
             logger.warning(f"[BACKUP] Hit rate limits. Sleeping for {wait_time}s (Attempt {attempt}/{max_retries}).")
             await asyncio.sleep(wait_time)
         except MessageIdInvalid:
+            print(f"[UTILITY DEBUG] MessageIdInvalid for: {file_name}, dropping source context.", flush=True)
             logger.error(f"[BACKUP] Source channel link broken for msg ID {msg_id}. Falling back to cached file ID dispatch.")
             chat_id = msg_id = None
         except ChatAdminRequired:
+            print(f"[UTILITY DEBUG] ChatAdminRequired permissions missing in channel for: {file_name}", flush=True)
             logger.error(f"[BACKUP] Permissions missing. Check bot access permissions in backup channel: {BACKUP_CHANNEL}")
             return 0
         except (BadRequest, RPCError) as e:
+            print(f"[UTILITY DEBUG] Telegram infrastructure error on attempt {attempt}: {e} for: {file_name}", flush=True)
             logger.warning(f"[BACKUP] Telegram infrastructure warning encountered: {e} (Attempt {attempt}/{max_retries}). Retrying configuration window...")
             await asyncio.sleep(2 * attempt)
-        except Exception:
+        except Exception as e:
+            print(f"[UTILITY DEBUG] Unexpected tracking failure on attempt {attempt}: {e} for: {file_name}", flush=True)
             logger.exception(f"[BACKUP] Unexpected backup error during attempt {attempt}/{max_retries}")
             await asyncio.sleep(2 * attempt)
     return 0
@@ -123,6 +138,7 @@ async def upload_cached_media(bot, file_id: str, file_name: str, caption: str, f
 
     # Strategy Path A: High-speed native source copying
     if chat_id and msg_id:
+        print(f"[UTILITY DEBUG] Using Strategy Path A (copy_message) for: {file_name}", flush=True)
         copied_msg = await bot.copy_message(
             chat_id=BACKUP_CHANNEL,
             from_chat_id=chat_id,
@@ -133,6 +149,8 @@ async def upload_cached_media(bot, file_id: str, file_name: str, caption: str, f
 
     # Strategy Path B: Structural Fix — Map types to native explicit Pyrogram parameter keys
     ft_lower = file_type.lower()
+    print(f"[UTILITY DEBUG] Using Strategy Path B ({ft_lower}) for: {file_name}", flush=True)
+    
     if ft_lower == "video":
         sent_msg = await bot.send_video(chat_id=BACKUP_CHANNEL, video=file_id, caption=final_caption)
     elif ft_lower == "audio":
