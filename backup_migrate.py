@@ -126,6 +126,9 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
                 caption = getattr(file_doc, "caption", None)
                 file_type = getattr(file_doc, "file_type", "document")
 
+                # Core Transaction Tracing Identifiers
+                print(f"Processing: {file_name}", flush=True)
+
                 # Dispatch transaction to backup layer utilities
                 backed_up = await backup_new_file(
                     file_id=file_id,
@@ -136,6 +139,8 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
                     original_chat_id=None,
                     original_msg_id=None
                 )
+
+                print(f"Finished: {file_name}", flush=True)
 
                 # backup_new_file returns a boolean value (True if saved, False if skipped)
                 if backed_up:
