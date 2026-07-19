@@ -1789,6 +1789,17 @@ async def auto_filter(client, msg, spoll=False):
 
                 settings = await get_settings(message.chat.id)
                 if not files:
+                    try:
+                        await client.send_message(
+                            LOG_CHANNEL,
+                            f"<b>📥 #MISSING_MOVIE_REQUEST\n\n"
+                            f"🎬 Query : <code>{search}</code>\n"
+                            f"👤 User : {message.from_user.mention if message.from_user else 'Unknown'}\n"
+                            f"🆔 User ID : <code>{message.from_user.id}</code>\n"
+                            f"💬 Chat ID : <code>{message.chat.id}</code></b>"
+                        )
+                    except Exception as e:
+                        logger.exception(f"Failed to log missing request: {e}")
                     if settings.get("spell_check"):
                         ai_sts = await m.edit('🤖 ᴘʟᴇᴀꜱᴇ ᴡᴀɪᴛ, ᴀɪ ɪꜱ ᴄʜᴇᴄᴋɪɴɢ ʏᴏᴜʀ ꜱᴘᴇʟʟɪɴɢ...')
                         is_misspelled = await ai_spell_check(chat_id=message.chat.id, wrong_name=search)
