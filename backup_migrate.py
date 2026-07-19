@@ -90,7 +90,8 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
     logger.info(f"[{partition_label}] Creating data cursor...")
     print("DEBUG 1", flush=True)
 
-    cursor = collection_class.find(query_filter).sort("$natural", 1)
+    # Change 1: Updated index tracking strategy from $natural sequence to explicit string matching
+    cursor = collection_class.find(query_filter).sort("file_id", 1)
 
     print("DEBUG 2", flush=True)
     logger.info(f"[{partition_label}] Cursor created successfully.")
@@ -102,8 +103,16 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
 
     # Infinite structural chunking pipeline (OOM Protected)
     while True:
+        # Change 2: Replaced simple list conversion statement with guarded error boundary traps
         print("DEBUG 3", flush=True)
-        docs = await cursor.to_list(length=100)
+        logger.info(f"[{partition_label}] Loading next batch...")
+
+        try:
+            docs = await cursor.to_list(length=100)
+        except Exception as e:
+            logger.exception(f"[{partition_label}] Batch load failed: {e}")
+            raise
+
         print(f"DEBUG 4: loaded {len(docs)} docs", flush=True)
 
         # Drop out of execution loops gracefully if the final target batch slice returns empty
