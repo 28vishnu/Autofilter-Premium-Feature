@@ -34,15 +34,7 @@ def parse_filename_details(file_name: str, file_size: int = 0) -> dict:
     )
     quality = quality_match.group(0).upper() if quality_match else "HD Quality"
 
-    # 3. Extract Codec (kept internally for fallback/parsing)
-    codec_match = re.search(
-        r'\b(x264|x265|hevc|h264|h265|aac|dts|dd5\.1|ac3)\b',
-        clean_name,
-        re.IGNORECASE
-    )
-    codec = codec_match.group(0).upper() if codec_match else "x264"
-
-    # 4. Extract Audio Languages (Expanded regional language coverage)
+    # 3. Extract Audio Languages (Expanded regional language coverage)
     languages_found = re.findall(
         r'\b(telugu|tamil|hindi|malayalam|kannada|english|tulu|bengali|marathi|punjabi|multi|sub|dub|dubbed)\b',
         clean_name,
@@ -50,35 +42,28 @@ def parse_filename_details(file_name: str, file_size: int = 0) -> dict:
     )
     language = " / ".join(dict.fromkeys([l.capitalize() for l in languages_found])) if languages_found else "Multi Audio"
 
-    # 5. Extract Clean Movie Title (Truncate at first technical tag or resolution)
+    # 4. Extract only the movie/series title by stopping at the first boundary marker
+    movie_name = clean_name
+
+    # Replace dots and underscores with spaces
+    movie_name = re.sub(r"[._]+", " ", movie_name)
+
+    # Stop at the first year, season, episode, or quality tag
     movie_name = re.split(
-        r'\b(360p|480p|540p|720p|1080p|1440p|2160p|4k|webrip|web-dl|bluray|hdtv|x264|x265|hevc|aac)\b', 
-        clean_name, 
-        flags=re.IGNORECASE
-    )[0]
-    
-    # Thorough Title Cleaning
-    movie_name = re.sub(r'@[A-Za-z0-9_]+', '', movie_name)
-    movie_name = re.sub(r'[._]+', ' ', movie_name)
-    
-    # Strip release terms, codecs, scene tags, and audio formats
-    movie_name = re.sub(
-        r'\b(TRUE|DL|WEB|WEBRip|WEB-DL|HDRip|BluRay|HDTV|AVC|HEVC|UNTOUCHED|REMUX|HDR|10BIT|x264|x265|AAC|DD5\.1|DDP5\.1|ATMOS|NF|AMZN|DSNP|HMAX|MNTGX|ION10|PSA|RARBG|YTS)\b',
-        '',
+        r"\s(?=(19\d{2}|20\d{2}|S\d{1,2}E\d{1,2}|E\d{1,3}|360p|480p|540p|720p|1080p|1440p|2160p|4K))",
         movie_name,
         flags=re.IGNORECASE
-    )
+    )[0]
 
-    # Remove any 4-digit release year
-    movie_name = re.sub(r'\b(19\d{2}|20\d{2})\b', '', movie_name)
+    # Remove uploader tags (e.g. @MNTGX)
+    movie_name = re.sub(r"@\S+", "", movie_name)
 
-    # Normalize remaining spaces and brackets
-    movie_name = re.sub(r'\s+', ' ', movie_name).strip(" -[]()")
+    # Remove extra spaces and leading/trailing punctuation
+    movie_name = re.sub(r"\s+", " ", movie_name).strip(" -[]()")
 
     return {
         "title": movie_name if movie_name else clean_name,
         "quality": quality,
-        "codec": codec,
         "language": language,
         "size": get_human_size(file_size)
     }
