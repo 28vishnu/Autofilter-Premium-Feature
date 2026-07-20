@@ -43,24 +43,33 @@ def parse_filename_details(file_name: str, file_size: int = 0) -> dict:
     language = " / ".join(dict.fromkeys([l.capitalize() for l in languages_found])) if languages_found else "Multi Audio"
 
     # 4. Process Movie / TV Series Title Extraction
-    # Replace dots and underscores with spaces
     movie_name = re.sub(r"[._]+", " ", clean_name)
 
-    # Check if it's a TV series (S01E05 / S1E5 format)
+    # Check if it is a TV series
     episode_match = re.search(r"\bS\d{1,2}E\d{1,2}\b", movie_name, re.IGNORECASE)
 
     if episode_match:
         episode = episode_match.group(0).upper()
-        # Keep title + season/episode tag only
-        title = movie_name[:episode_match.start()].strip()
+
+        # Title before SxxExx
+        title = movie_name[:episode_match.start()]
+
+        # Remove release year from title
+        title = re.sub(r"\b(19\d{2}|20\d{2})\b", "", title)
+
+        # Clean spaces
+        title = re.sub(r"\s+", " ", title).strip()
+
         movie_name = f"{title} {episode}"
     else:
-        # Movie: stop at the release year or quality tag
+        # Movie: stop at year or quality
         movie_name = re.split(
             r"\s(?=(19\d{2}|20\d{2}|360p|480p|540p|720p|1080p|1440p|2160p|4K))",
             movie_name,
             flags=re.IGNORECASE
         )[0]
+
+        movie_name = re.sub(r"\s+", " ", movie_name).strip()
 
     # Remove uploader tags (e.g. @MNTGX)
     movie_name = re.sub(r"@\S+", "", movie_name)
