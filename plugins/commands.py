@@ -31,6 +31,8 @@ BATCH_FILES = {}
 
 @Client.on_message(filters.command("start") & filters.incoming)
 async def start(client, message):
+    print("START:", message.command)
+
     if EMOJI_MODE:
         try:
             await message.react(emoji=random.choice(REACTIONS), big=True)
