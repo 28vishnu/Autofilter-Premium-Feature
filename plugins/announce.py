@@ -134,7 +134,7 @@ async def announce_handler(client: Client, message: Message):
             f"<b>{hashtags}</b>"
         )
 
-        # Direct API call replaces temp.U_NAME dependency
+        # Generate button deep link
         bot_info = await client.get_me()
         bot_username = bot_info.username
         search_query = details['title'].replace(' ', '-')
@@ -148,16 +148,19 @@ async def announce_handler(client: Client, message: Message):
             ]
         ])
 
-        # Send post with thumbnail/photo if available, otherwise fall back to formatted text
-        if media_thumb:
-            sent_announcement = await client.send_photo(
-                chat_id=target_chat,
-                photo=media_thumb,
-                caption=announce_text,
-                reply_markup=button,
-                parse_mode=enums.ParseMode.HTML
-            )
-        else:
+        # Attempt to send with photo, fallback to text if photo fails
+        try:
+            if media_thumb:
+                sent_announcement = await client.send_photo(
+                    chat_id=target_chat,
+                    photo=media_thumb,
+                    caption=announce_text,
+                    reply_markup=button,
+                    parse_mode=enums.ParseMode.HTML
+                )
+            else:
+                raise Exception("No thumbnail")
+        except Exception:
             sent_announcement = await client.send_message(
                 chat_id=target_chat,
                 text=announce_text,
