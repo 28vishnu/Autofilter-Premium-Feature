@@ -26,15 +26,15 @@ def parse_filename_details(file_name: str, file_size: int = 0) -> dict:
     # 1. Clean extension
     clean_name = re.sub(r'\.(mkv|mp4|avi|mov)$', '', file_name, flags=re.IGNORECASE)
 
-    # 2. Extract Quality / Format
+    # 2. Extract Quality / Format (Expanded detection list)
     quality_match = re.search(
-        r'\b(480p|720p|1080p|2160p|4k|hdrip|webrip|web-dl|bluray|hdtv)\b', 
-        clean_name, 
+        r'\b(360p|480p|540p|720p|1080p|1440p|2160p|4k|hdrip|webrip|web-dl|bluray|brrip|dvdrip|hdtv|cam|hdcam|hdts)\b',
+        clean_name,
         re.IGNORECASE
     )
     quality = quality_match.group(0).upper() if quality_match else "HD Quality"
 
-    # 3. Extract Codec (kept internally for hashtags if needed)
+    # 3. Extract Codec (kept internally for fallback/parsing)
     codec_match = re.search(
         r'\b(x264|x265|hevc|h264|h265|aac|dts|dd5\.1|ac3)\b',
         clean_name,
@@ -42,17 +42,17 @@ def parse_filename_details(file_name: str, file_size: int = 0) -> dict:
     )
     codec = codec_match.group(0).upper() if codec_match else "x264"
 
-    # 4. Extract Common Languages
+    # 4. Extract Audio Languages (Expanded regional language coverage)
     languages_found = re.findall(
-        r'\b(telugu|tamil|hindi|malayalam|kannada|english|multi|sub|dub|dubbed)\b', 
-        clean_name, 
+        r'\b(telugu|tamil|hindi|malayalam|kannada|english|tulu|bengali|marathi|punjabi|multi|sub|dub|dubbed)\b',
+        clean_name,
         re.IGNORECASE
     )
     language = " / ".join(dict.fromkeys([l.capitalize() for l in languages_found])) if languages_found else "Multi Audio"
 
     # 5. Extract Clean Movie Title (Truncate at first technical tag or resolution)
     movie_name = re.split(
-        r'\b(480p|720p|1080p|2160p|4k|webrip|web-dl|bluray|hdtv|x264|x265|hevc|aac)\b', 
+        r'\b(360p|480p|540p|720p|1080p|1440p|2160p|4k|webrip|web-dl|bluray|hdtv|x264|x265|hevc|aac)\b', 
         clean_name, 
         flags=re.IGNORECASE
     )[0]
@@ -132,9 +132,9 @@ async def announce_handler(client: Client, message: Message):
         search_query = re.sub(r'[._]+', ' ', search_query).strip()
         search_query = re.sub(r'\s+', '-', search_query)
 
-        # Hashtags derived from clean query
+        # Clean hashtags format
         clean_tag = re.sub(r'[^a-zA-Z0-9]', '', search_query.replace("-", ""))
-        hashtags = f"#{clean_tag} #{details['quality']}"
+        hashtags = f"#{clean_tag} #MovieUpdates"
 
         # Construct ultra-clean professional post layout
         announce_text = (
