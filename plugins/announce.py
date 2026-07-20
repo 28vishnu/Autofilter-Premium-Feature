@@ -26,7 +26,7 @@ def parse_filename_details(file_name: str, file_size: int = 0) -> dict:
     # 1. Clean extension
     clean_name = re.sub(r'\.(mkv|mp4|avi|mov)$', '', file_name, flags=re.IGNORECASE)
 
-    # 2. Extract Quality / Format (Expanded detection list)
+    # 2. Extract Quality / Format
     quality_match = re.search(
         r'\b(360p|480p|540p|720p|1080p|1440p|2160p|4k|hdrip|webrip|web-dl|bluray|brrip|dvdrip|hdtv|cam|hdcam|hdts)\b',
         clean_name,
@@ -34,7 +34,7 @@ def parse_filename_details(file_name: str, file_size: int = 0) -> dict:
     )
     quality = quality_match.group(0).upper() if quality_match else "HD Quality"
 
-    # 3. Extract Audio Languages (Expanded regional language coverage)
+    # 3. Extract Audio Languages
     languages_found = re.findall(
         r'\b(telugu|tamil|hindi|malayalam|kannada|english|tulu|bengali|marathi|punjabi|multi|sub|dub|dubbed)\b',
         clean_name,
@@ -42,18 +42,25 @@ def parse_filename_details(file_name: str, file_size: int = 0) -> dict:
     )
     language = " / ".join(dict.fromkeys([l.capitalize() for l in languages_found])) if languages_found else "Multi Audio"
 
-    # 4. Extract only the movie/series title by stopping at the first boundary marker
-    movie_name = clean_name
-
+    # 4. Process Movie / TV Series Title Extraction
     # Replace dots and underscores with spaces
-    movie_name = re.sub(r"[._]+", " ", movie_name)
+    movie_name = re.sub(r"[._]+", " ", clean_name)
 
-    # Stop at the first year, season, episode, or quality tag
-    movie_name = re.split(
-        r"\s(?=(19\d{2}|20\d{2}|S\d{1,2}E\d{1,2}|E\d{1,3}|360p|480p|540p|720p|1080p|1440p|2160p|4K))",
-        movie_name,
-        flags=re.IGNORECASE
-    )[0]
+    # Check if it's a TV series (S01E05 / S1E5 format)
+    episode_match = re.search(r"\bS\d{1,2}E\d{1,2}\b", movie_name, re.IGNORECASE)
+
+    if episode_match:
+        episode = episode_match.group(0).upper()
+        # Keep title + season/episode tag only
+        title = movie_name[:episode_match.start()].strip()
+        movie_name = f"{title} {episode}"
+    else:
+        # Movie: stop at the release year or quality tag
+        movie_name = re.split(
+            r"\s(?=(19\d{2}|20\d{2}|360p|480p|540p|720p|1080p|1440p|2160p|4K))",
+            movie_name,
+            flags=re.IGNORECASE
+        )[0]
 
     # Remove uploader tags (e.g. @MNTGX)
     movie_name = re.sub(r"@\S+", "", movie_name)
