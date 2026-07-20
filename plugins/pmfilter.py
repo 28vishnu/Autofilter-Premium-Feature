@@ -1795,7 +1795,7 @@ async def auto_filter(client, msg, spoll=False):
                             f"<b>📥 #MISSING_MOVIE_REQUEST\n\n"
                             f"🎬 Query : <code>{search}</code>\n"
                             f"👤 User : {message.from_user.mention if message.from_user else 'Unknown'}\n"
-                            f"🆔 User ID : <code>{message.from_user.id}</code>\n"
+                            f"🆔 User ID : <code>{message.from_user.id if message.from_user else 'Unknown'}</code>\n"
                             f"💬 Chat ID : <code>{message.chat.id}</code></b>"
                         )
                     except Exception as e:
