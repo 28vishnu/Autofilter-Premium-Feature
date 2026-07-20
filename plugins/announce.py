@@ -22,15 +22,11 @@ def get_human_size(size_bytes: int) -> str:
 
 
 def parse_filename_details(file_name: str, file_size: int = 0) -> dict:
-    """Extracts Title, Quality, Language, Codec, Year, and File Size from a raw media filename."""
+    """Extracts Title, Quality, Language, and File Size from a raw media filename."""
     # 1. Clean extension
     clean_name = re.sub(r'\.(mkv|mp4|avi|mov)$', '', file_name, flags=re.IGNORECASE)
 
-    # 2. Extract Release Year
-    year_match = re.search(r'\b(19\d{2}|20\d{2})\b', clean_name)
-    year = year_match.group(0) if year_match else None
-
-    # 3. Extract Quality / Format
+    # 2. Extract Quality / Format
     quality_match = re.search(
         r'\b(480p|720p|1080p|2160p|4k|hdrip|webrip|web-dl|bluray|hdtv)\b', 
         clean_name, 
@@ -38,7 +34,7 @@ def parse_filename_details(file_name: str, file_size: int = 0) -> dict:
     )
     quality = quality_match.group(0).upper() if quality_match else "HD Quality"
 
-    # 4. Extract Codec / Audio
+    # 3. Extract Codec (kept internally for hashtags if needed)
     codec_match = re.search(
         r'\b(x264|x265|hevc|h264|h265|aac|dts|dd5\.1|ac3)\b',
         clean_name,
@@ -46,7 +42,7 @@ def parse_filename_details(file_name: str, file_size: int = 0) -> dict:
     )
     codec = codec_match.group(0).upper() if codec_match else "x264"
 
-    # 5. Extract Common Languages
+    # 4. Extract Common Languages
     languages_found = re.findall(
         r'\b(telugu|tamil|hindi|malayalam|kannada|english|multi|sub|dub|dubbed)\b', 
         clean_name, 
@@ -54,23 +50,33 @@ def parse_filename_details(file_name: str, file_size: int = 0) -> dict:
     )
     language = " / ".join(dict.fromkeys([l.capitalize() for l in languages_found])) if languages_found else "Multi Audio"
 
-    # 6. Extract Clean Movie Title (Truncate at first technical tag or resolution)
+    # 5. Extract Clean Movie Title (Truncate at first technical tag or resolution)
     movie_name = re.split(
         r'\b(480p|720p|1080p|2160p|4k|webrip|web-dl|bluray|hdtv|x264|x265|hevc|aac)\b', 
         clean_name, 
         flags=re.IGNORECASE
     )[0]
     
-    # Enhanced Title Cleaning (Strip uploader tags, release groups, and extra whitespace)
+    # Thorough Title Cleaning
     movie_name = re.sub(r'@[A-Za-z0-9_]+', '', movie_name)
     movie_name = re.sub(r'[._]+', ' ', movie_name)
-    movie_name = re.sub(r'\b(S\d{2}E\d{2}|E\d{2}|10bit|NF|AMZN|DSNP|WEB|WEBRip|WEB-DL|HDRip|BluRay|HDTV)\b', '', movie_name, flags=re.IGNORECASE)
-    movie_name = re.sub(r'\b(ION10|GalaxyRG|RARBG|YTS|PSA|Pahe|HDTalkie|MNTGX)\b', '', movie_name, flags=re.IGNORECASE)
+    
+    # Strip release terms, codecs, scene tags, and audio formats
+    movie_name = re.sub(
+        r'\b(TRUE|DL|WEB|WEBRip|WEB-DL|HDRip|BluRay|HDTV|AVC|HEVC|UNTOUCHED|REMUX|HDR|10BIT|x264|x265|AAC|DD5\.1|DDP5\.1|ATMOS|NF|AMZN|DSNP|HMAX|MNTGX|ION10|PSA|RARBG|YTS)\b',
+        '',
+        movie_name,
+        flags=re.IGNORECASE
+    )
+
+    # Remove any 4-digit release year
+    movie_name = re.sub(r'\b(19\d{2}|20\d{2})\b', '', movie_name)
+
+    # Normalize remaining spaces and brackets
     movie_name = re.sub(r'\s+', ' ', movie_name).strip(" -[]()")
 
     return {
         "title": movie_name if movie_name else clean_name,
-        "year": year,
         "quality": quality,
         "codec": codec,
         "language": language,
@@ -128,17 +134,16 @@ async def announce_handler(client: Client, message: Message):
 
         # Hashtags derived from clean query
         clean_tag = re.sub(r'[^a-zA-Z0-9]', '', search_query.replace("-", ""))
-        hashtags = f"#{clean_tag} #{details['quality']} #{details['codec']}"
+        hashtags = f"#{clean_tag} #{details['quality']}"
 
-        # Construct professional post layout
+        # Construct ultra-clean professional post layout
         announce_text = (
             f"<b>🔥 NEW FILE ADDED 🔥</b>\n\n"
             f"<b>🎬 Movie Title:</b> <code>{details['title']}</code>\n"
-            f"<b>📅 Release Year:</b> <code>{details['year'] or 'N/A'}</code>\n"
-            f"<b>📺 Quality & Codec:</b> <code>{details['quality']} [{details['codec']}]</code>\n"
+            f"<b>📺 Quality:</b> <code>{details['quality']}</code>\n"
             f"<b>🎧 Audio Language:</b> <code>{details['language']}</code>\n"
             f"<b>📂 File Size:</b> <code>{details['size']}</code>\n\n"
-            f"<i>✨ Click the button below to get your file instantly in the bot!</i>\n\n"
+            f"<i>✨ Click the button below to get your file instantly!</i>\n\n"
             f"<b>{hashtags}</b>"
         )
 
