@@ -61,9 +61,12 @@ def parse_filename_details(file_name: str, file_size: int = 0) -> dict:
         flags=re.IGNORECASE
     )[0]
     
-    # Remove leading tags (like @channel names), dots, underscores, and trailing symbols
+    # Enhanced Title Cleaning (Strip uploader tags, release groups, and extra whitespace)
     movie_name = re.sub(r'@[A-Za-z0-9_]+', '', movie_name)
-    movie_name = re.sub(r'[._]', ' ', movie_name).strip(" -[]()")
+    movie_name = re.sub(r'[._]+', ' ', movie_name)
+    movie_name = re.sub(r'\b(S\d{2}E\d{2}|E\d{2}|10bit|NF|AMZN|DSNP|WEB|WEBRip|WEB-DL|HDRip|BluRay|HDTV)\b', '', movie_name, flags=re.IGNORECASE)
+    movie_name = re.sub(r'\b(ION10|GalaxyRG|RARBG|YTS|PSA|Pahe|HDTalkie|MNTGX)\b', '', movie_name, flags=re.IGNORECASE)
+    movie_name = re.sub(r'\s+', ' ', movie_name).strip(" -[]()")
 
     return {
         "title": movie_name if movie_name else clean_name,
@@ -118,8 +121,13 @@ async def announce_handler(client: Client, message: Message):
         # Parse technical parameters
         details = parse_filename_details(raw_filename, file_size)
 
-        # Build clean hashtag string
-        clean_tag = re.sub(r'[^a-zA-Z0-9]', '', details['title'])
+        # Build clean search query directly from parsed title
+        search_query = details["title"]
+        search_query = re.sub(r'[._]+', ' ', search_query).strip()
+        search_query = re.sub(r'\s+', '-', search_query)
+
+        # Hashtags derived from clean query
+        clean_tag = re.sub(r'[^a-zA-Z0-9]', '', search_query.replace("-", ""))
         hashtags = f"#{clean_tag} #{details['quality']} #{details['codec']}"
 
         # Construct professional post layout
@@ -137,8 +145,11 @@ async def announce_handler(client: Client, message: Message):
         # Generate button deep link
         bot_info = await client.get_me()
         bot_username = bot_info.username
-        search_query = details['title'].replace(' ', '-')
-        
+
+        # Print generated deep link to console logs for debugging
+        print(f"Deep Link: https://t.me/{bot_username}?start=getfile-{search_query}", flush=True)
+
+        # Build Inline Keyboard
         button = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
