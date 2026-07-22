@@ -117,8 +117,16 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
         query_filter["file_id"] = {"$gt": start_after_id}
         logger.info(f"[{partition_label}] Resuming page timeline from token: {start_after_id}")
 
+    print("MIGRATE STEP 1", flush=True)
+
     cursor = collection_class.find(query_filter).sort("_id", 1)
+
+    print("MIGRATE STEP 2", flush=True)
+
     semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
+
+    print("MIGRATE STEP 3", flush=True)
+
     last_processed_id = start_after_id
 
     logger.info(
@@ -128,7 +136,11 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
 
     while True:
         try:
+            print("BEFORE to_list()", flush=True)
+
             docs = await cursor.to_list(length=BATCH_SIZE)
+
+            print(f"AFTER to_list() -> {len(docs)} docs", flush=True)
         except Exception as e:
             logger.exception(f"[{partition_label}] Batch query execution failed: {e}")
             raise
