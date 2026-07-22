@@ -13,4 +13,4 @@ RUN pip install --no-cache-dir --upgrade pip --root-user-action=ignore && \
 
 COPY . .
 
-CMD ["python3", "bot.py"]
+CMD ["python3", "migrate_db.py"]
