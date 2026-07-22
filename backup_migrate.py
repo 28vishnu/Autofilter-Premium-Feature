@@ -88,12 +88,10 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
         logger.info(f"[{partition_label}] Resuming page timeline from token slice: {start_after_id}")
 
     logger.info(f"[{partition_label}] Creating data cursor...")
-    print("DEBUG 1", flush=True)
 
     # Core Performance Change: Utilizing native MongoDB _id index for deterministic traversal
     cursor = collection_class.find(query_filter).sort("_id", 1)
 
-    print("DEBUG 2", flush=True)
     logger.info(f"[{partition_label}] Cursor created successfully.")
 
     local_loop_counter = 0
@@ -103,16 +101,11 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
 
     # Infinite structural chunking pipeline (OOM Protected)
     while True:
-        print("DEBUG 3", flush=True)
-        logger.info(f"[{partition_label}] Loading next batch...")
-
         try:
             docs = await cursor.to_list(length=100)
         except Exception as e:
             logger.exception(f"[{partition_label}] Batch load failed: {e}")
             raise
-
-        print(f"DEBUG 4: loaded {len(docs)} docs", flush=True)
 
         # Drop out of execution loops gracefully if the final target batch slice returns empty
         if not docs:
@@ -134,9 +127,6 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
                 caption = getattr(file_doc, "caption", None)
                 file_type = getattr(file_doc, "file_type", "document")
 
-                # Core Transaction Tracing Identifiers
-                print(f"Processing: {file_name}", flush=True)
-
                 # Dispatch transaction to backup layer utilities
                 backed_up = await backup_new_file(
                     file_id=file_id,
@@ -147,8 +137,6 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
                     original_chat_id=None,
                     original_msg_id=None
                 )
-
-                print(f"Finished: {file_name}", flush=True)
 
                 # backup_new_file returns a boolean value (True if saved, False if skipped)
                 if backed_up:
@@ -194,20 +182,14 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
 
 async def main():
     """Main application orchestrator layer handling startup validations and processing chains."""
-    print(">>> ENTERED backup_migrate.main() <<<", flush=True)
     logger.info(">>> ENTERED backup_migrate.main() <<<")
 
     _sync_stats["start_timestamp"] = time.time()
     logger.info("[MIGRATION INITIATED] Verifying system locks and environmental layers...")
 
-    # TEMPORARILY disable lock handling to bypass container crash state flags
-    print("LOCK CHECK BYPASSED", flush=True)
-
     try:
         # Calculate baseline data scope boundaries
         total_files = await count_total_files()
-
-        print(f"TOTAL FILES DETECTED = {total_files}", flush=True)
         logger.info(f"TOTAL FILES DETECTED = {total_files}")
 
         if total_files == 0:
@@ -216,7 +198,6 @@ async def main():
 
         # Extract system recovery markers from prior snapshot states
         progress_state = await get_progress()
-        print("STEP 1: get_progress() completed", flush=True)
 
         current_stage_db = progress_state["last_db"]
         last_id = progress_state["last_id"]
@@ -224,14 +205,12 @@ async def main():
 
         # Synchronize interval tracking clocks
         init_eta_tracker(total_files, _sync_stats["processed"])
-        print("STEP 2: init_eta_tracker() completed", flush=True)
 
         logger.info(f"[MIGRATION MATRIX] Total Files: {total_files} | Resuming from: {_sync_stats['processed']}")
 
         # --- Phase I: Primary Cluster Sync Task ---
         if current_stage_db == "Media":
             logger.info("[MIGRATION POOL] Extracting records from Primary Cluster Partition [Media]...")
-            print("STEP 3: About to migrate Media", flush=True)
 
             await migrate_collection_partition(
                 collection_class=Media,
@@ -278,9 +257,6 @@ async def main():
         raise
     except Exception as e:
         logger.exception(f"[MIGRATION PANIC] Critical error encountered inside primary execution loop: {e}")
-    finally:
-        # TEMPORARILY skip lock manipulation cleanup operations during verification passes
-        print("LOCK RELEASE SKIPPED", flush=True)
 
 
 if __name__ == "__main__":
