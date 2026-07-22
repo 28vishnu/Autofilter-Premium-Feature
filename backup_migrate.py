@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 migration_lock = db["migration_lock"]
 
 # Performance & Concurrency Config
-CONCURRENCY_LIMIT = 5    # Safe conservative starting point (monitor logs before raising to 8-10)
+CONCURRENCY_LIMIT = 5    # Safe conservative starting point
 BATCH_SIZE = 500         # 500 documents per MongoDB cursor pull
 SAVE_INTERVAL = 1000     # Flush progress every 1,000 files
 
@@ -115,7 +115,6 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
         query_filter["file_id"] = {"$gt": start_after_id}
         logger.info(f"[{partition_label}] Resuming page timeline from token: {start_after_id}")
 
-    # Use default _id index for deterministic traversal
     cursor = collection_class.find(query_filter).sort("_id", 1)
     semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
     last_processed_id = start_after_id
@@ -135,14 +134,10 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
         if not docs:
             break
 
-        # Dispatch batch workers concurrently
         tasks = [process_file_worker(doc, semaphore, partition_label) for doc in docs]
-
-        # Shield gather loop: return_exceptions=True guarantees one crashing task won't drop the whole batch
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for res in results:
-            # Handle unhandled worker exceptions gracefully
             if isinstance(res, Exception):
                 _sync_stats["processed"] += 1
                 _sync_stats["failed"] += 1
@@ -161,7 +156,6 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
             else:
                 _sync_stats["failed"] += 1
 
-            # Flush progress periodically every 1,000 files
             if _sync_stats["processed"] % SAVE_INTERVAL == 0:
                 await log_progress(
                     current_db=partition_label,
@@ -175,7 +169,6 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
                     f"Failed: {_sync_stats['failed']:,}"
                 )
 
-    # Save final chunk marker
     if last_processed_id:
         await save_progress(
             last_db=partition_label,
@@ -194,14 +187,24 @@ async def main():
     _sync_stats["start_timestamp"] = time.time()
 
     try:
+        print("MAIN STEP A", flush=True)
+
         total_files = await count_total_files()
+
+        print(f"MAIN STEP B total={total_files}", flush=True)
         logger.info(f"📊 TOTAL HISTORICAL FILES DETECTED = {total_files:,}")
+        print("MAIN STEP C", flush=True)
 
         if total_files == 0:
             logger.warning("[MIGRATION ABORTED] Collection is empty. Exiting.")
             return
 
+        print("BEFORE get_progress()", flush=True)
         progress_state = await get_progress()
+        print(f"AFTER get_progress() -> {progress_state}", flush=True)
+
+        print("MAIN STEP D", flush=True)
+
         current_stage_db = progress_state["last_db"]
         last_id = progress_state["last_id"]
         _sync_stats["processed"] = progress_state["processed"]
@@ -229,7 +232,6 @@ async def main():
                 start_after_id=last_id
             )
 
-        # Clear progress state document when completely finished
         await clear_progress()
 
         runtime_duration = time.time() - _sync_stats["start_timestamp"]
