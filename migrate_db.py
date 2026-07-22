@@ -18,20 +18,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AutoMigrator")
 
-# Target safety threshold: 450 MB in Bytes (Gives 54 MB buffer under Atlas 512 MB cap)
-TARGET_SIZE_BYTES = 450 * 1024 * 1024
+# Target recovery threshold: 504 MB in Bytes (Fast recovery target)
+TARGET_SIZE_BYTES = 504 * 1024 * 1024
 BATCH_SIZE = 1000  # 1,000 docs per chunk
 BATCHES_PER_CHECK = 10  # Check dbstats once every 10 batches (10,000 docs)
 CHECK_INTERVAL_SECONDS = 300  # Check every 5 minutes when healthy
 
 
 async def auto_migrate():
-    """High-performance background worker to ensure DB1 total storage remains comfortably under 450 MB."""
+    """High-performance background worker to ensure DB1 total storage remains under 504 MB."""
     if not DATABASE_URI2:
         logger.error("❌ DATABASE_URI2 is missing in info.py! Storage auto-migrator disabled.")
         return
 
-    logger.info("⚡ Initializing database connections for Optimized Auto-Migrator...")
+    logger.info("⚡ Initializing database connections for Storage Auto-Migrator...")
     client1 = AsyncIOMotorClient(DATABASE_URI)
     client2 = AsyncIOMotorClient(DATABASE_URI2)
 
@@ -41,12 +41,12 @@ async def auto_migrate():
     col1 = db1[COLLECTION_NAME]
     col2 = db2[COLLECTION_NAME]
 
-    logger.info(f"🚀 High-Speed Auto-Migrator daemon initialized (Target: 450 MB | Check Interval: {CHECK_INTERVAL_SECONDS // 60} mins).")
+    logger.info(f"🚀 High-Speed Auto-Migrator daemon initialized (Target: 504 MB | Check Interval: {CHECK_INTERVAL_SECONDS // 60} mins).")
 
     try:
         while True:
             try:
-                # 1. Calculate total size (Data + Index)
+                # 1. Calculate total size (Data + Index) matching Atlas quota logic
                 stats = await db1.command("dbstats")
                 data_size = stats.get("dataSize", 0)
                 index_size = stats.get("indexSize", 0)
@@ -58,14 +58,14 @@ async def auto_migrate():
                     f"(Data: {data_size / (1024 * 1024):.2f} MB | Index: {index_size / (1024 * 1024):.2f} MB)"
                 )
 
-                # 2. If storage is under target 450 MB threshold, sleep for 5 minutes
+                # 2. If storage is under 504 MB, sleep for 5 minutes
                 if total_size_bytes <= TARGET_SIZE_BYTES:
-                    logger.info(f"✅ DB1 storage is healthy (<= 450 MB). Sleeping for 5 minutes...")
+                    logger.info(f"✅ DB1 storage is healthy (<= 504 MB). Sleeping for 5 minutes...")
                     await asyncio.sleep(CHECK_INTERVAL_SECONDS)
                     continue
 
                 # 3. Process up to 10 batches (10,000 docs) before re-checking dbstats
-                logger.info(f"⚠️ DB1 over 450 MB threshold ({total_size_mb:.2f} MB). Moving up to {BATCHES_PER_CHECK * BATCH_SIZE:,} documents in 10 chunks...")
+                logger.info(f"⚠️ DB1 over 504 MB threshold ({total_size_mb:.2f} MB). Moving up to {BATCHES_PER_CHECK * BATCH_SIZE:,} documents in 10 chunks...")
 
                 for batch_num in range(1, BATCHES_PER_CHECK + 1):
                     cursor = col1.find().sort("_id", 1).limit(BATCH_SIZE)
