@@ -21,9 +21,10 @@ from dreamxbotz.util.keepalive import ping_server
 from dreamxbotz.Bot.clients import initialize_clients
 from PIL import Image
 
-# Core backup core validation and migration hooks integration layers
+# Core backup validation and storage auto-migration imports
 from backup_utils import init_backup_indexes
-from backup_migrate import main as migrate_main
+from backup_migrate import main as backup_history_main
+from migrate_db import auto_migrate as storage_auto_migrate
 
 Image.MAX_IMAGE_PIXELS = 500_000_000
 
@@ -46,28 +47,20 @@ botStartTime = time.time()
 ppath = "plugins/*.py"
 files = glob.glob(ppath)
 
-# Background Worker: Runs migration periodically without blocking bot execution
-async def migration_worker_loop(interval_seconds: int = 600):
+
+async def run_historical_backup_task():
     """
-    Continuous background task for database migration and capacity checks.
-    Runs every `interval_seconds` (default: 10 minutes).
+    Background worker that completes remaining historical backup sync pass once.
     """
-    logger = logging.getLogger("MigrationWorker")
-    logger.info("⚡ Background migration worker initialized.")
-    
-    while True:
-        try:
-            logger.info("🔍 Running scheduled backup migration check...")
-            await migrate_main()
-            logger.info("✅ Scheduled migration cycle completed.")
-        except asyncio.CancelledError:
-            logger.info("🛑 Background migration worker stopping...")
-            break
-        except Exception:
-            logger.exception("❌ Background migration worker encountered an error.")
-        
-        # Wait for the next scheduled interval
-        await asyncio.sleep(interval_seconds)
+    logger = logging.getLogger("HistoricalBackupWorker")
+    try:
+        logger.info("⚡ Starting historical backup completion task...")
+        await backup_history_main()
+        logger.info("✅ Historical backup task finished successfully.")
+    except asyncio.CancelledError:
+        logger.info("🛑 Historical backup worker cancelled.")
+    except Exception:
+        logger.exception("❌ Historical backup worker encountered an error.")
 
 
 async def dreamxbotz_start():
@@ -146,9 +139,15 @@ async def dreamxbotz_start():
 
     dreamxbotz.loop.create_task(keep_alive())
 
-    # 6. Non-blocking background worker loop scheduled on asyncio loop
+    # 6. Non-blocking background workers execution
     print("STEP H", flush=True)
-    dreamxbotz.loop.create_task(migration_worker_loop(interval_seconds=600))
+    
+    # Task 1: Continuous storage monitor daemon (keeps DB1 under 504 MB)
+    dreamxbotz.loop.create_task(storage_auto_migrate())
+
+    # Task 2: One-time background pass for processing remaining historical backlog
+    dreamxbotz.loop.create_task(run_historical_backup_task())
+    
     print("STEP I", flush=True)
 
     await idle()
