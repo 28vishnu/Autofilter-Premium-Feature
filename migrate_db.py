@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import BulkWriteError
 
 # Import configuration variables from info.py
 try:
@@ -20,17 +20,17 @@ logger = logging.getLogger("AutoMigrator")
 
 # Target threshold: 504 MB in Bytes (Data + Index)
 TARGET_SIZE_BYTES = 504 * 1024 * 1024
-BATCH_SIZE = 500
+BATCH_SIZE = 1000  # Optimized batch size (can be bumped to 2000-5000 if needed)
 CHECK_INTERVAL_SECONDS = 300  # Check every 5 minutes
 
 
 async def auto_migrate():
-    """Continuous background worker to ensure DB1 total storage remains under 504 MB."""
+    """High-performance background worker to ensure DB1 total storage remains under 504 MB."""
     if not DATABASE_URI2:
         logger.error("❌ DATABASE_URI2 is missing in info.py! Storage auto-migrator disabled.")
         return
 
-    logger.info("⚡ Initializing database connections for Storage Auto-Migrator...")
+    logger.info("⚡ Initializing database connections for Optimized Auto-Migrator...")
     client1 = AsyncIOMotorClient(DATABASE_URI)
     client2 = AsyncIOMotorClient(DATABASE_URI2)
 
@@ -40,7 +40,7 @@ async def auto_migrate():
     col1 = db1[COLLECTION_NAME]
     col2 = db2[COLLECTION_NAME]
 
-    logger.info(f"🚀 Storage Auto-Migrator daemon initialized (Check interval: {CHECK_INTERVAL_SECONDS // 60} mins).")
+    logger.info(f"🚀 High-Speed Auto-Migrator daemon initialized (Check interval: {CHECK_INTERVAL_SECONDS // 60} mins).")
 
     try:
         while True:
@@ -63,8 +63,8 @@ async def auto_migrate():
                     await asyncio.sleep(CHECK_INTERVAL_SECONDS)
                     continue
 
-                # 3. If storage exceeds threshold, fetch the next batch deterministically using _id index
-                logger.info("⚠️ DB1 over 504 MB threshold! Moving batch to DB2...")
+                # 3. Fetch batch deterministically using _id index
+                logger.info(f"⚠️ DB1 over 504 MB threshold! Moving batch of {BATCH_SIZE} to DB2...")
                 cursor = col1.find().sort("_id", 1).limit(BATCH_SIZE)
                 docs = await cursor.to_list(length=BATCH_SIZE)
 
@@ -73,46 +73,46 @@ async def auto_migrate():
                     await asyncio.sleep(CHECK_INTERVAL_SECONDS)
                     continue
 
-                copied_ids = []
+                batch_ids = [doc["_id"] for doc in docs]
 
-                # 4. Copy & Verify step
-                for doc in docs:
-                    doc_id = doc["_id"]
+                # 4. BULK COPY: Attempt bulk insert into DB2 (ignore duplicate key errors safely)
+                try:
+                    await col2.insert_many(docs, ordered=False)
+                except BulkWriteError as bwe:
+                    # Duplicate key errors (E11000) are expected if records exist in DB2; log only non-duplicate errors
+                    non_dup_errors = [
+                        err for err in bwe.details.get("writeErrors", []) 
+                        if err.get("code") != 11000
+                    ]
+                    if non_dup_errors:
+                        logger.warning(f"⚠️ Unexpected bulk insert warnings: {non_dup_errors[:3]}")
 
-                    # Check if document already exists in DB2
-                    exists_before = await col2.find_one({"_id": doc_id})
+                # 5. BULK VERIFICATION: Query DB2 in 1 single call for all IDs in batch
+                verified_cursor = col2.find({"_id": {"$in": batch_ids}}, {"_id": 1})
+                verified_docs = await verified_cursor.to_list(length=len(batch_ids))
+                verified_ids = [doc["_id"] for doc in verified_docs]
 
-                    if not exists_before:
-                        try:
-                            await col2.insert_one(doc)
-                        except DuplicateKeyError:
-                            pass
+                if not verified_ids:
+                    logger.warning("⚠️ No documents in the current batch passed DB2 verification. Skipping deletion.")
+                    await asyncio.sleep(5)
+                    continue
 
-                    # Fast Verification: Ensure document exists in DB2 before marking for deletion
-                    verified_in_db2 = await col2.find_one({"_id": doc_id})
-                    if verified_in_db2:
-                        copied_ids.append(doc_id)
-                    else:
-                        logger.warning(f"⚠️ Document ID {doc_id} failed verification in DB2. Skipping deletion.")
+                # 6. BULK DELETE: Delete ONLY verified documents from DB1
+                try:
+                    delete_result = await col1.delete_many({"_id": {"$in": verified_ids}})
+                    logger.info(
+                        f"⚡ Batch Complete! Successfully moved {delete_result.deleted_count}/{len(docs)} documents."
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"❌ Delete failed on DB1: {e}\n"
+                        "MongoDB Atlas may be blocking delete operations due to write restrictions."
+                    )
+                    await asyncio.sleep(CHECK_INTERVAL_SECONDS)
+                    continue
 
-                # 5. Delete ONLY verified copied documents from DB1
-                if copied_ids:
-                    try:
-                        delete_result = await col1.delete_many({"_id": {"$in": copied_ids}})
-                        logger.info(
-                            f"📦 Successfully moved {delete_result.deleted_count} documents from DB1 -> DB2."
-                        )
-                    except Exception as e:
-                        logger.error(
-                            f"❌ Delete failed on DB1: {e}\n"
-                            "MongoDB Atlas may be blocking delete operations due to write restrictions."
-                        )
-                        # Pause execution on deletion failure to prevent endless loops
-                        await asyncio.sleep(CHECK_INTERVAL_SECONDS)
-                        continue
-
-                # Short 1-second pause before immediately re-checking storage if DB1 is still over capacity
-                await asyncio.sleep(1)
+                # Small 0.5-second pause between batches if DB1 is still over 504 MB
+                await asyncio.sleep(0.5)
 
             except asyncio.CancelledError:
                 logger.info("🛑 Auto-migration task received cancellation signal. Stopping...")
