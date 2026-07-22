@@ -20,7 +20,7 @@ logger = logging.getLogger("DB_Migrator")
 
 # Target threshold: 504 MB in Bytes
 TARGET_SIZE_BYTES = 504 * 1024 * 1024
-BATCH_SIZE = 10  # Initial test batch size
+BATCH_SIZE = 500  # Initial test batch size
 
 
 async def run_migration():
