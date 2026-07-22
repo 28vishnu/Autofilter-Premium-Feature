@@ -65,15 +65,21 @@ async def release_migration_lock():
         logger.error(f"[MIGRATION LOCK] Error releasing execution lock: {e}")
 
 
-async def count_total_files() -> int:
-    """Computes total storage records directly from collections."""
+async def count_total_files():
+    print("COUNT STEP 1", flush=True)
+
     total = 0
-    try:
-        total += await Media.count_documents({})
-        if MULTIPLE_DB:
-            total += await Media2.count_documents({})
-    except Exception as e:
-        logger.error(f"[MIGRATION COUNT] Error calculating collection boundaries: {e}")
+
+    print("COUNT STEP 2", flush=True)
+    total += await Media.count_documents({})
+    print(f"PRIMARY COUNT = {total}", flush=True)
+
+    if MULTIPLE_DB:
+        print("COUNT STEP 3", flush=True)
+        total += await Media2.count_documents({})
+        print(f"TOTAL COUNT = {total}", flush=True)
+
+    print("COUNT STEP 4", flush=True)
     return total
 
 
