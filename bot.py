@@ -55,7 +55,9 @@ async def run_historical_backup_task():
     logger = logging.getLogger("HistoricalBackupWorker")
     try:
         logger.info("⚡ Starting historical backup completion task...")
+        logger.info("Before backup_history_main()")
         await backup_history_main()
+        logger.info("After backup_history_main()")
         logger.info("✅ Historical backup task finished successfully.")
     except asyncio.CancelledError:
         logger.info("🛑 Historical backup worker cancelled.")
@@ -141,13 +143,13 @@ async def dreamxbotz_start():
 
     # 6. Non-blocking background workers execution
     print("STEP H", flush=True)
-    
+
     # Task 1: Continuous storage monitor daemon (keeps DB1 under 504 MB)
     dreamxbotz.loop.create_task(storage_auto_migrate())
 
     # Task 2: One-time background pass for processing remaining historical backlog
     dreamxbotz.loop.create_task(run_historical_backup_task())
-    
+
     print("STEP I", flush=True)
 
     await idle()
