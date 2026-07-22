@@ -56,7 +56,12 @@ async def run_historical_backup_task():
     try:
         logger.info("⚡ Starting historical backup completion task...")
         logger.info("Before backup_history_main()")
+        logger.info(f"backup_history_main = {backup_history_main}")
+        logger.info(f"type = {type(backup_history_main)}")
+        logger.info(f"module = {backup_history_main.__module__}")
+
         await backup_history_main()
+
         logger.info("After backup_history_main()")
         logger.info("✅ Historical backup task finished successfully.")
     except asyncio.CancelledError:
