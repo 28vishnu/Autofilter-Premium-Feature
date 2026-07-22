@@ -46,17 +46,41 @@ botStartTime = time.time()
 ppath = "plugins/*.py"
 files = glob.glob(ppath)
 
+# Background Worker: Runs migration periodically without blocking bot execution
+async def migration_worker_loop(interval_seconds: int = 600):
+    """
+    Continuous background task for database migration and capacity checks.
+    Runs every `interval_seconds` (default: 10 minutes).
+    """
+    logger = logging.getLogger("MigrationWorker")
+    logger.info("⚡ Background migration worker initialized.")
+    
+    while True:
+        try:
+            logger.info("🔍 Running scheduled backup migration check...")
+            await migrate_main()
+            logger.info("✅ Scheduled migration cycle completed.")
+        except asyncio.CancelledError:
+            logger.info("🛑 Background migration worker stopping...")
+            break
+        except Exception:
+            logger.exception("❌ Background migration worker encountered an error.")
+        
+        # Wait for the next scheduled interval
+        await asyncio.sleep(interval_seconds)
+
+
 async def dreamxbotz_start():
     # 1. Added explicit flush on baseline launch string
     print('\n\nInitalizing DreamxBotz', flush=True)
-    
+
     print("STEP A", flush=True)
     await dreamxbotz.start()
     print("STEP B", flush=True)
-    
+
     bot_info = await dreamxbotz.get_me()
     print("STEP C", flush=True)
-    
+
     dreamxbotz.username = bot_info.username
     await initialize_clients()
 
@@ -122,18 +146,9 @@ async def dreamxbotz_start():
 
     dreamxbotz.loop.create_task(keep_alive())
 
-    # Isolated Task Wrapper: Explicit containment mapping for tracking exceptions
-    async def start_migration():
-        try:
-            logging.info("Starting backup migration...")
-            await migrate_main()
-            logging.info("Backup migration finished.")
-        except Exception:
-            logging.exception("Background migration crashed.")
-
-    # 6. Non-blocking worker loop schedule trace integration
+    # 6. Non-blocking background worker loop scheduled on asyncio loop
     print("STEP H", flush=True)
-    dreamxbotz.loop.create_task(start_migration())
+    dreamxbotz.loop.create_task(migration_worker_loop(interval_seconds=600))
     print("STEP I", flush=True)
 
     await idle()
