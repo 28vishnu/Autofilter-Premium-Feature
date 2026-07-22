@@ -131,7 +131,7 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
 
         # Dispatch batch workers concurrently
         tasks = [process_file_worker(doc, semaphore, partition_label) for doc in docs]
-        
+
         # Shield gather loop: return_exceptions=True guarantees one crashing task won't drop the whole batch
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -182,7 +182,9 @@ async def migrate_collection_partition(collection_class, partition_label: str, s
 
 async def main():
     """Main orchestrator for historical backup sync."""
+    print("ENTERED backup_migrate.main()", flush=True)
     logger.info(">>> ENTERED backup_migrate.main() <<<")
+
     _sync_stats["start_timestamp"] = time.time()
 
     try:
