@@ -110,6 +110,8 @@ async def process_file_worker(file_doc, semaphore: asyncio.Semaphore, partition_
 
 async def migrate_collection_partition(collection_class, partition_label: str, start_after_id: str) -> int:
     """Streams documents in batch chunks using concurrent async worker pools."""
+    print(f"ENTER migrate_collection_partition {partition_label}", flush=True)
+
     query_filter = {}
     if start_after_id:
         query_filter["file_id"] = {"$gt": start_after_id}
@@ -215,11 +217,15 @@ async def main():
         # --- Phase I: Primary Collection ---
         if current_stage_db == "Media":
             logger.info("[MIGRATION POOL] Extracting records from Primary Partition [Media]...")
+
+            print("BEFORE migrate_collection_partition()", flush=True)
             await migrate_collection_partition(
                 collection_class=Media,
                 partition_label="Media",
                 start_after_id=last_id
             )
+            print("AFTER migrate_collection_partition()", flush=True)
+
             current_stage_db = "Media2"
             last_id = None
 
